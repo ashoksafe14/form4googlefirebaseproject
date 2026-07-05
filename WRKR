@@ -1,0 +1,2172 @@
+// ╔══════════════════════════════════════════════════════════════╗
+//  Configuration Constants for future changes direct from Script
+// ╠══════════════════════════════════════════════════════════════╣
+const PROJECT_VERSION  = 'form3';
+const FORM_HEADING     = 'Exam Form Submission Portal';
+const GAS_URL          = 'https://script.google.com/macros/s/AKfycbxRnQysU0qFY_XGXPR0NPSIVVMHoK93wS0N7muSejRnLAfLoMzE-ggUsZ_CdQkhOoLvvg/exec';
+const SUBMIT_ALERT_MSG = '📋 Form Submit press karne ke baad aapka Form ka Detail Page dikhega — uska Screenshot ya Save zaroor karein!';
+
+// ── Success Screen Notes ──
+const NOTE1_PENDING  = 'Document Attachments with Declaration-12 Review (At Exam Window)➤';
+const NOTE2_SUCCESS  = 'Please Note: To complete your Final Exam Form submission, you must accept Declaration-12 and ensure your fee payment is verified. If either condition is not met, you will be disqualified from the exam at your own responsibility.';
+
+// ── Duplicate Block Warning Codes ──
+const ERR_ROLL   = 'Roll No पहले से Submit है! [ERR1:NR]';
+const ERR_UTR    = 'UTR No. पहले से Submit है! [ERR2:NU]';
+const ERR_TRANS  = 'Transaction ID पहले से Submit है! [ERR3:IT]';
+const ERR_DUP    = 'You have already submitted this form. Contact at Exam Form Submission Window in your College.';
+// ERR4:CA      → Aadhaar + class full match
+// ERR5:IA      → ABC + class full match
+// ERR7:IACAL6  → ABC last 6 + Aadhaar last 6 (same row) + same class
+// ERR8:PE      → Enrollment No + class
+
+// ── Success Screen Box Headings ──
+const RECEIPT_BOX_LEFT  = '📋 STUDENT RECEIPT';
+const RECEIPT_BOX_RIGHT = '📜 DECLARATION -12';
+// ╚══════════════════════════════════════════════════════════════╝
+
+// ── EFORMS — Cloudflare Worker (AVSMINDWS) ──────────────────────
+// Yeh Worker HTML serve karta hai — mobile par perfectly kaam karta hai
+// Deploy: Cloudflare Dashboard → Workers & Pages → Create → Worker → Edit Code
+
+const HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0">
+  <title>${FORM_HEADING}</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=DM+Serif+Display&display=swap" rel="stylesheet">
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <style>
+    :root {
+      --navy:       #0d1f3c;
+      --navy-2:     #1a3460;
+      --amber:      #f59e0b;
+      --amber-2:    #fbbf24;
+      --amber-3:    #fde68a;
+      --success:    #059669;
+      --error:      #dc2626;
+      --warn:       #d97706;
+      --bg:         #eef2f9;
+      --card:       #ffffff;
+      --border:     #d1d5db;
+      --text:       #1e293b;
+      --muted:      #64748b;
+      --exam-blue:  #bfe8f4;
+      --exam-blue-b:#7dcde8;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    .hidden { display: none !important; }
+
+    #landingScreen {
+      min-height: 100vh; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      padding: 24px 20px 40px; background: var(--navy);
+      position: relative; overflow: hidden;
+    }
+    #landingScreen::before {
+      content: ''; position: absolute; inset: 0;
+      background: radial-gradient(ellipse at 10% 10%, rgba(245,158,11,.18) 0%, transparent 50%),
+                  radial-gradient(ellipse at 90% 90%, rgba(26,52,96,.5) 0%, transparent 60%);
+      pointer-events: none;
+    }
+    .landing-logo     { font-size: 52px; margin-bottom: 10px; position: relative; animation: popIn .5s cubic-bezier(.34,1.56,.64,1) both; }
+    .landing-title    { font-family: 'DM Serif Display', serif; font-size: 24px; color: var(--amber); text-align: center; position: relative; margin-bottom: 4px; animation: fadeUp .5s .1s ease both; }
+    .landing-subtitle { font-size: 11px; color: #94a3b8; letter-spacing: .7px; text-transform: uppercase; text-align: center; position: relative; margin-bottom: 24px; animation: fadeUp .5s .15s ease both; }
+    .landing-question { font-size: 13px; font-weight: 700; color: #cbd5e1; letter-spacing: .5px; text-transform: uppercase; text-align: center; margin-bottom: 16px; position: relative; animation: fadeUp .5s .3s ease both; }
+    .choice-cards     { display: flex; flex-direction: column; gap: 14px; width: 100%; max-width: 340px; position: relative; animation: fadeUp .5s .35s ease both; }
+    .choice-card {
+      background: rgba(255,255,255,.06); border: 1.5px solid rgba(255,255,255,.12);
+      border-radius: 16px; padding: 20px; cursor: pointer;
+      transition: background .2s, border-color .2s, transform .15s, opacity .3s;
+      display: flex; align-items: center; gap: 16px;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .choice-card:active                { transform: scale(.97); }
+    .choice-card.exam-card:hover       { background: rgba(13,31,60,.5);      border-color: var(--navy-2); }
+    .choice-card.reval-card:hover      { background: rgba(245,158,11,.10);   border-color: var(--amber); }
+    /* ── ACTION 1: Locked state — before Gmail login ── */
+    .choice-card.locked                { opacity: 0.32; cursor: not-allowed; pointer-events: none; filter: grayscale(0.25); }
+    .choice-card.locked:active         { transform: none; }
+    .choice-icon  { font-size: 36px; flex-shrink: 0; line-height: 1; }
+    .choice-text  { flex: 1; }
+    .choice-title { font-size: 17px; font-weight: 800; margin-bottom: 3px; }
+    .choice-desc  { font-size: 12px; color: #94a3b8; line-height: 1.4; }
+    .choice-arrow { font-size: 18px; color: #475569; flex-shrink: 0; }
+    .exam-card  .choice-title { color: var(--amber-3); }
+    .reval-card .choice-title { color: var(--amber-2); }
+    /* ── ACTION 1: Login section on landing ── */
+    .login-wrap    { width: 100%; max-width: 340px; margin-bottom: 20px; position: relative; animation: fadeUp .5s .2s ease both; }
+    .login-box     { background: rgba(255,255,255,.07); border: 1.5px solid rgba(255,255,255,.13); border-radius: 16px; padding: 16px 18px; display: flex; flex-direction: column; align-items: center; gap: 11px; }
+    .login-prompt  { font-size: 12.5px; font-weight: 600; color: #94a3b8; text-align: center; line-height: 1.5; }
+    .login-tag     { display: inline-flex; align-items: center; gap: 7px; background: rgba(6,214,160,.13); border: 1px solid rgba(6,214,160,.28); border-radius: 20px; padding: 6px 14px; font-size: 11.5px; color: #6ee7b7; font-weight: 700; word-break: break-all; text-align: center; }
+    .switch-btn    { margin-top: 6px; background: none; border: 1px solid rgba(239,68,68,.4); border-radius: 20px; color: #fca5a5; font-size: 11px; font-weight: 600; padding: 5px 14px; cursor: pointer; transition: background .2s, border-color .2s; letter-spacing: .3px; }
+    .switch-btn:hover { background: rgba(239,68,68,.12); border-color: rgba(239,68,68,.7); }
+
+    #formScreen { padding-bottom: 24px; }
+    .portal-header {
+      background: var(--navy); padding: 14px 16px 12px;
+      display: flex; align-items: center; gap: 12px;
+      position: relative; overflow: hidden;
+    }
+    .portal-header::before {
+      content: ''; position: absolute; inset: 0;
+      background: radial-gradient(ellipse at 70% 0%, rgba(245,158,11,.18) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .back-btn {
+      background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.14);
+      color: #cbd5e1; border-radius: 9px; width: auto; min-width: 36px; height: 36px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 700; letter-spacing: .3px;
+      cursor: pointer; flex-shrink: 0; position: relative; padding: 0 12px; gap: 3px;
+      transition: background .2s; -webkit-tap-highlight-color: transparent;
+    }
+    .back-btn:active       { background: rgba(255,255,255,.15); }
+    .header-text           { position: relative; flex: 1; min-width: 0; }
+    .header-text h1        { font-family: 'DM Serif Display', serif; font-size: 17px; color: var(--amber); line-height: 1.2; }
+    .header-text p         { font-size: 10px; color: #94a3b8; letter-spacing: .5px; text-transform: uppercase; margin-top: 2px; }
+    .form-type-badge       { position: relative; font-size: 10px; font-weight: 700; padding: 3px 10px; border-radius: 20px; letter-spacing: .3px; flex-shrink: 0; }
+    .badge-exam            { background: rgba(26,52,96,.6);    color: var(--amber-3); border: 1px solid var(--navy-2); }
+    .badge-reval           { background: rgba(245,158,11,.15); color: var(--amber-2); border: 1px solid rgba(245,158,11,.3); }
+    /* ── ACTION 1: Logged-in badge in form header ── */
+    .logged-in-badge { font-size: 9px; color: #6ee7b7; font-weight: 700; padding: 3px 9px; background: rgba(6,214,160,.12); border: 1px solid rgba(6,214,160,.25); border-radius: 20px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110px; flex-shrink: 0; position: relative; }
+
+    .alert { margin: 12px 12px 0; padding: 10px 14px; border-radius: 10px; font-size: 13px; font-weight: 500; display: none; animation: fadeIn .3s ease; }
+    .alert.show    { display: flex; gap: 10px; align-items: flex-start; }
+    .alert-icon    { flex-shrink: 0; font-size: 15px; margin-top: 1px; }
+    .alert.error   { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+    .alert.success { background: #f0fdf4; color: #14532d; border: 1px solid #bbf7d0; }
+    .alert.info    { background: #eff6ff; color: #1e3a8a; border: 1px solid #bfdbfe; }
+    .error-input   { border: 2px solid var(--error) !important; box-shadow: 0 0 0 3px rgba(220,38,38,.10) !important; background: #fef2f2 !important; }
+
+    .card { background: var(--card); margin: 12px 12px 0; border-radius: 12px; border: 1px solid #e4eaf4; overflow: hidden; box-shadow: 0 1px 5px rgba(13,31,60,.07); }
+    .card.exam-section           { background: var(--exam-blue); border-color: var(--exam-blue-b); }
+    .card.exam-section .card-body { background: var(--exam-blue); }
+    .card-header  { background: linear-gradient(135deg, var(--navy) 0%, var(--navy-2) 100%); padding: 9px 15px; display: flex; align-items: center; gap: 8px; }
+    .card-header .icon { font-size: 13px; }
+    .card-header span  { font-size: 10px; font-weight: 700; letter-spacing: .9px; text-transform: uppercase; color: var(--amber-3); }
+    .card-body    { padding: 15px; }
+
+    .field        { margin-bottom: 12px; }
+    .field:last-child { margin-bottom: 0; }
+    label         { display: block; font-size: 10.5px; font-weight: 700; color: var(--navy-2); margin-bottom: 4px; text-transform: uppercase; letter-spacing: .4px; }
+    label .req    { color: var(--error); margin-left: 2px; }
+    label .note   { font-size: 9px; font-weight: 500; color: var(--muted); margin-left: 4px; text-transform: none; letter-spacing: 0; }
+    .input-wrap   { position: relative; }
+
+    input[type=text], input[type=email], input[type=tel],
+    input[type=number], input[type=date], input[type=url],
+    select, textarea {
+      width: 100%; padding: 11px 13px;
+      border: 1.5px solid var(--border); border-radius: 9px;
+      font-family: 'DM Sans', sans-serif; font-size: 16px;
+      color: var(--text); background: #fff;
+      transition: border-color .18s, box-shadow .18s;
+      appearance: none; -webkit-appearance: none;
+    }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--navy-2); box-shadow: 0 0 0 3px rgba(26,52,96,.10); }
+    input:disabled, select:disabled, textarea:disabled { background: #f1f5f9; color: #94a3b8; cursor: not-allowed; border-color: #e5e7eb; }
+    select {
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%2364748b' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 12px center; padding-right: 32px;
+    }
+    .field-icon { position: absolute; right: 11px; top: 50%; transform: translateY(-50%); font-size: 15px; pointer-events: none; }
+    .field-msg  { font-size: 11.5px; margin-top: 4px; font-weight: 500; display: flex; align-items: center; gap: 4px; min-height: 16px; }
+    .field-msg.err  { color: var(--error); }
+    .field-msg.ok   { color: var(--success); }
+    .field-msg.info { color: var(--muted); }
+
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
+    @media (max-width: 360px) { .grid2 { grid-template-columns: 1fr; } }
+    .divider { height: 1px; background: #a9d8ec; margin: 13px 0; }
+
+    .counter-row { display: flex; align-items: center; gap: 12px; }
+    .ctr-btn {
+      width: 46px; height: 46px; border-radius: 10px; border: none;
+      background: var(--navy); color: #fff; font-size: 24px; font-weight: 300;
+      cursor: pointer; flex-shrink: 0; display: flex; align-items: center;
+      justify-content: center; line-height: 1;
+      transition: background .15s, transform .1s;
+      user-select: none; -webkit-tap-highlight-color: transparent;
+    }
+    .ctr-btn:active:not(:disabled) { transform: scale(.88); }
+    .ctr-btn:disabled { background: #e5e7eb; color: #9ca3af; cursor: not-allowed; }
+    .ctr-val  { font-size: 26px; font-weight: 800; color: var(--navy); min-width: 36px; text-align: center; }
+    .ctr-info { font-size: 11.5px; color: var(--muted); font-weight: 500; flex: 1; }
+
+    .fee-display { background: var(--navy); border-radius: 11px; padding: 16px; text-align: center; margin-top: 6px; position: relative; overflow: hidden; }
+    .fee-display::before { content: ''; position: absolute; inset: 0; background: radial-gradient(ellipse at 80% 10%, rgba(245,158,11,.18) 0%, transparent 60%); }
+    .fee-label  { font-size: 10px; color: #94a3b8; letter-spacing: .7px; text-transform: uppercase; position: relative; }
+    .fee-amount { font-family: 'DM Serif Display', serif; font-size: 36px; color: var(--amber); position: relative; margin: 4px 0; line-height: 1; }
+    .fee-type   { font-size: 11px; color: #64748b; position: relative; font-weight: 600; }
+    .fee-diff   { font-size: 12px; font-weight: 700; margin-top: 5px; position: relative; }
+    .fee-diff.ok   { color: #6ee7b7; }
+    .fee-diff.over { color: #fca5a5; }
+
+    .photo-area { border: 2px dashed var(--border); border-radius: 10px; padding: 20px 16px; text-align: center; cursor: pointer; transition: border-color .2s, background .2s; position: relative; }
+    .photo-area:hover { border-color: var(--navy-2); background: #f0f6ff; }
+    .photo-area.has-photo { border-style: solid; border-color: var(--success); background: #f0fdf4; }
+    .photo-upload-label .up-icon { font-size: 28px; display: block; margin-bottom: 6px; }
+    .photo-upload-label { font-size: 13px; color: var(--muted); font-weight: 500; pointer-events: none; }
+    .photo-preview  { max-width: 100%; border-radius: 8px; margin-top: 10px; display: none; max-height: 150px; object-fit: cover; }
+    .photo-status   { font-size: 12px; margin-top: 6px; font-weight: 500; }
+    .photo-status.uploading { color: var(--warn); }
+    .photo-status.done      { color: var(--success); }
+    .photo-status.error     { color: var(--error); }
+    .photo-status.warn      { color: var(--warn); font-weight: 700; }
+
+    .photo-btn-row { display: flex; gap: 8px; margin-top: 10px; }
+    .photo-btn {
+      flex: 1; padding: 10px; border-radius: 9px; border: none;
+      font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 700;
+      cursor: pointer; transition: background .2s, transform .1s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .photo-btn:active { transform: scale(.97); }
+    .photo-btn.upload { background: var(--navy); color: #fff; }
+    .photo-btn.upload:hover { background: var(--navy-2); }
+    .photo-btn.remove { background: #fef2f2; color: var(--error); border: 1.5px solid #fecaca; }
+    .photo-btn.remove:hover { background: #fee2e2; }
+
+    .submit-wrap { margin: 16px 12px 0; }
+    .submit-btn {
+      display: block; width: 100%; padding: 17px;
+      background: var(--navy); color: #fff; border: none; border-radius: 13px;
+      font-family: 'DM Sans', sans-serif; font-size: 15px; font-weight: 800;
+      cursor: pointer; letter-spacing: .2px;
+      transition: background .2s, transform .1s, box-shadow .2s;
+      box-shadow: 0 4px 22px rgba(13,31,60,.30);
+    }
+    .submit-btn:hover:not(:disabled)  { background: var(--navy-2); }
+    .submit-btn:active:not(:disabled) { transform: scale(.98); }
+    .submit-btn:disabled { background: #9ca3af; cursor: not-allowed; box-shadow: none; }
+
+    .spinner { display: inline-block; width: 13px; height: 13px; border: 2px solid #e5e7eb; border-top-color: var(--navy); border-radius: 50%; animation: spin .6s linear infinite; vertical-align: middle; }
+
+    .success-screen { text-align: center; padding: 36px 16px; animation: slideIn .4s ease; }
+    .success-screen .check { font-size: 56px; display: block; margin-bottom: 14px; }
+    .success-screen h2 { font-family: 'DM Serif Display', serif; font-size: 22px; color: var(--navy); margin-bottom: 6px; }
+    .success-screen p  { font-size: 13.5px; color: var(--muted); }
+    .detail-row     { display: flex; justify-content: space-between; align-items:flex-start; border-bottom: 1px solid #f1f5f9; padding: 10px 0; font-size: 13px; flex-wrap:wrap; gap:4px; }
+    .detail-key { color: var(--muted); font-weight: 600; min-width:120px; }
+    .detail-val { font-weight: 700; color: var(--navy); text-align: right; flex:1; }
+    .detail-row:last-child { border-bottom: none; }
+
+    .new-form-btn { margin-top: 22px; padding: 13px 30px; background: var(--navy); color: #fff; border: none; border-radius: 10px; font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 700; cursor: pointer; }
+
+    @keyframes spin    { to { transform: rotate(360deg); } }
+    @keyframes fadeIn  { from { opacity:0; transform:translateY(-5px); } to { opacity:1; transform:none; } }
+    @keyframes slideIn { from { opacity:0; transform:translateY(8px); }  to { opacity:1; transform:none; } }
+    @keyframes fadeUp  { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:none; } }
+    @keyframes popIn   { from { opacity:0; transform:scale(.7); }        to { opacity:1; transform:scale(1); } }
+
+    /* Receipt watermark */
+    .receipt-watermark {
+      position:absolute; inset:0; pointer-events:none; user-select:none; z-index:0;
+      background-image: radial-gradient(circle, rgba(13,31,60,0.18) 1px, transparent 1px);
+      background-size: 10px 10px;
+    }
+    @media print {
+      .receipt-watermark { display:none !important; }
+      #receiptArea { padding: 0 !important; background: #fff !important; }
+      #receiptMiddleRow { page-break-inside: avoid; }
+    }
+
+    @media print {
+      @page { size: A4 portrait; margin: 1.5in; }
+      body { background: #fff !important; }
+      #formScreen > *:not(#successScreen) { display:none !important; }
+      #successScreen { display:block !important; }
+      .new-form-btn, #saveReceiptBtn, #saveStatus { display:none !important; }
+    }
+
+    @media (max-width: 520px) {
+      #receiptMiddleRow { flex-direction: column !important; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ══ ACTION 1: g_id_onload moved to LANDING level ══════════════ -->
+<div id="g_id_onload"
+     data-client_id="603738018853-7cbs3e7e99cdpfg4dk48cle62673bkm2.apps.googleusercontent.com"
+     data-context="signin"
+     data-ux_mode="popup"
+     data-callback="handleCredentialResponse"
+     data-auto_prompt="false">
+</div>
+
+<!-- LANDING -->
+<div id="landingScreen">
+  <div class="landing-logo">📋</div>
+  <h1 class="landing-title" id="landingHeading">${FORM_HEADING}</h1>
+  <p class="landing-subtitle">Exam Fee Submission Portal</p>
+
+  <!-- ══ ACTION 1: Gmail Login section on Landing ══ -->
+  <div class="login-wrap">
+    <div class="login-box">
+      <div class="login-prompt" id="landingLoginPrompt">
+        📧 Gmail se Login karo<br>
+        <span style="color:#64748b;font-size:11px;font-weight:500;">Dono forms automatically activate ho jayenge</span>
+      </div>
+      <div id="landingGoogleBtn">
+        <div class="g_id_signin"
+             data-type="standard"
+             data-shape="rectangular"
+             data-theme="outline"
+             data-text="signin_with"
+             data-size="large"
+             data-logo_alignment="left">
+        </div>
+      </div>
+      <div id="landingEmailTag" class="login-tag hidden">
+        <span>✅</span><span id="landingEmailText"></span>
+      </div>
+      <button id="switchAccountBtn" class="switch-btn hidden" onclick="logoutSession()">
+        🔄 Switch Account / Logout
+      </button>
+    </div>
+  </div>
+
+  <p class="landing-question" id="landingQuestion">Gmail Login karo — Form Access karein</p>
+
+  <!-- ══ ACTION 1: choice cards start locked; unlocked after Gmail login ══ -->
+  <div class="choice-cards">
+    <div class="choice-card exam-card locked" id="examChoiceCard" onclick="selectType('exam')" role="button" tabindex="0">
+      <span class="choice-icon">📝</span>
+      <div class="choice-text">
+        <div class="choice-title">Exam Form</div>
+        <div class="choice-desc">Re-appear/Back-log's online Exam Form details Submission.</div>
+      </div>
+      <span class="choice-arrow">›</span>
+    </div>
+    <div class="choice-card reval-card locked" id="revalChoiceCard" onclick="selectType('reval')" role="button" tabindex="0">
+      <span class="choice-icon">🔄</span>
+      <div class="choice-text">
+        <div class="choice-title">Revaluation Form</div>
+        <div class="choice-desc">Paper re-check — 1 sub ₹160 · 2 sub ₹310</div>
+      </div>
+      <span class="choice-arrow">›</span>
+    </div>
+  </div>
+  <div id="landingFooter" style="position:absolute;bottom:14px;width:100%;text-align:center;font-size:11px;color:#475569;letter-spacing:.4px;"></div>
+</div>
+
+<div id="formClosedScreen" class="hidden" style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px 20px;background:var(--navy);">
+  <div style="font-size:60px;margin-bottom:20px;">🔒</div>
+  <h2 style="font-family:'DM Serif Display',serif;color:var(--amber);font-size:22px;text-align:center;margin-bottom:12px;">Form is Currently Closed</h2>
+  <p style="color:#fde68a;font-size:15px;font-weight:600;text-align:center;padding:0 20px;">Form submission is closed contact Exam Form window!</p>
+</div>
+
+<!-- FORM SCREEN -->
+<div id="formScreen" class="hidden">
+
+  <div class="portal-header">
+    <button class="back-btn" onclick="goBack()">‹ Back</button>
+    <div class="header-text">
+      <h1 id="formHeading">${FORM_HEADING}</h1>
+    </div>
+    <span class="form-type-badge badge-exam" id="formBadge">EXAM</span>
+    <!-- ══ ACTION 1: Logged-in email badge in form header ══ -->
+    <span class="logged-in-badge hidden" id="loggedInBadge"></span>
+  </div>
+
+  <div class="alert" id="alertBox">
+    <span class="alert-icon" id="alertIcon"></span>
+    <span id="alertText"></span>
+  </div>
+
+  <div id="mainForm">
+
+    <!-- NOTICE CARD -->
+    <div class="card hidden" id="noticeCard" style="border-color:#f59e0b; background:#fffbeb;">
+      <div class="card-header" style="background:linear-gradient(135deg,#92400e,#b45309);">
+        <span class="icon">📢</span><span>Important Notice</span>
+      </div>
+      <div class="card-body" id="noticeBody" style="font-size:13px;color:#1e293b;line-height:1.75;"></div>
+    </div>
+
+    <!-- 1. EXAMINATION DETAILS -->
+    <div class="card exam-section">
+      <div class="card-header"><span class="icon">🎓</span><span>Examination Details</span></div>
+      <div class="card-body">
+
+        <div class="field">
+          <label>Name of Examination <span class="req">*</span></label>
+          <select id="examName" onchange="onClassChange(); clearErrIfFilled(this)">
+            <option value="">— Select Class —</option>
+          </select>
+          <div class="field-msg info" id="classMsg">Loading classes…</div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="field">
+          <label id="thLabel">Theory Fail Subjects <span class="req">*</span></label>
+          <div class="counter-row">
+            <button class="ctr-btn" id="thMinus" onclick="changeCount('th',-1)" disabled>−</button>
+            <span class="ctr-val" id="thVal">0</span>
+            <button class="ctr-btn" id="thPlus"  onclick="changeCount('th', 1)" disabled>+</button>
+            <span class="ctr-info" id="thInfo">Select class first</span>
+          </div>
+        </div>
+
+        <div class="field" id="prField">
+          <label>Practical Fail Subjects</label>
+          <div class="counter-row">
+            <button class="ctr-btn" id="prMinus" onclick="changeCount('pr',-1)" disabled>−</button>
+            <span class="ctr-val" id="prVal">0</span>
+            <button class="ctr-btn" id="prPlus"  onclick="changeCount('pr', 1)" disabled>+</button>
+            <span class="ctr-info" id="prInfo">Max 5</span>
+          </div>
+        </div>
+
+        <div class="fee-display">
+          <div class="fee-label">Calculated Total Fee</div>
+          <div class="fee-amount" id="calcFeeAmt">₹ —</div>
+          <div class="fee-type"   id="calcFeeType"></div>
+          <div class="fee-diff"   id="feeDiffLine"></div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- 2. PAYMENT DETAILS -->
+    <div class="card">
+      <div class="card-header"><span class="icon">💳</span><span>Payment Details</span></div>
+      <div class="card-body">
+
+        <!-- QR CODE -->
+        <div id="qrSection" class="hidden" style="text-align:center;margin-bottom:16px;padding-bottom:14px;border-bottom:1.5px dashed var(--border);">
+          <p style="font-size:10px;font-weight:700;color:var(--navy-2);text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px;">&#x1F4F2; Scan &amp; Pay</p>
+          <img id="qrImg" src="" alt="QR Code"
+               style="max-width:220px;width:100%;border-radius:12px;border:2px solid var(--border);display:block;margin:0 auto;cursor:pointer;-webkit-touch-callout:default;"
+               onclick="shareQR()">
+          <p style="font-size:9.5px;color:var(--muted);margin-top:5px;">Tap = Share &nbsp;·&nbsp; Hold = Copy/Save</p>
+        </div>
+
+        <div class="field">
+          <label>Total Fee Paid (₹) <span class="req">*</span></label>
+          <input type="number" id="feePaid" placeholder="Enter amount paid" min="0"
+                 inputmode="numeric" oninput="updateDiff(); clearErrIfFilled(this)">
+        </div>
+
+        <div class="grid2">
+          <div class="field">
+            <label>UTR No. — Last 6 Digits <span class="req">*</span>
+              <span class="note">UTR No. nahi hone par 000000 type karein</span>
+            </label>
+            <div class="input-wrap">
+              <input type="text" id="utrNo" maxlength="6" placeholder="000000"
+                     inputmode="numeric"
+                     oninput="numOnly(this,6); clearDup('utr')">
+              <span class="field-icon" id="utrIcon"></span>
+            </div>
+            <div class="field-msg" id="utrMsg"></div>
+          </div>
+          <div class="field">
+            <label>Transaction ID — Last 6 <span class="req">*</span></label>
+            <div class="input-wrap">
+              <input type="text" id="transId" maxlength="6" placeholder="000000"
+                     inputmode="numeric"
+                     oninput="numOnly(this,6); clearDup('trans')">
+              <span class="field-icon" id="transIcon"></span>
+            </div>
+            <div class="field-msg" id="transMsg"></div>
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div class="field">
+            <label>UPI Payment App <span class="req">*</span></label>
+            <select id="upiApp" onchange="clearErrIfFilled(this)">
+              <option value="">— Select —</option>
+              <option>GPay</option><option>PhonePe</option>
+              <option>Paytm</option><option>BHIM</option><option>Other</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Transaction Date <span class="req">*</span></label>
+            <input type="date" id="feeDate" onchange="clearErrIfFilled(this)">
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- 3. STUDENT DETAILS -->
+    <div class="card">
+      <div class="card-header"><span class="icon">👤</span><span>Student Details</span></div>
+      <div class="card-body">
+
+        <div class="field">
+          <label>Roll No <span class="req">*</span></label>
+          <div class="input-wrap">
+            <input type="text" id="rollNo" placeholder="6-digit Roll No"
+                   oninput="clearDup('roll'); removePassportPhoto()">
+            <span class="field-icon" id="rollIcon"></span>
+          </div>
+          <div class="field-msg" id="rollMsg"></div>
+        </div>
+
+        <div class="field">
+          <label>Student Name — CAPITAL LETTERS <span class="req">*</span></label>
+          <input type="text" id="stuName" placeholder="FIRST MIDDLE SURNAME"
+                 oninput="clearErrIfFilled(this)">
+        </div>
+
+        <div class="field" id="motherWrap">
+          <label>Mother's Name — WITHOUT SURNAME <span class="req">*</span></label>
+          <input type="text" id="motherName" placeholder="MOTHER'S FIRST NAME ONLY"
+                 oninput="clearErrIfFilled(this)">
+        </div>
+
+        <div class="grid2">
+          <div class="field">
+            <label>Mobile No <span class="req">*</span></label>
+            <input type="tel" id="mobile" maxlength="10" placeholder="10-digit"
+                   inputmode="numeric" oninput="numOnly(this,10); clearErrIfFilled(this)">
+          </div>
+          <div class="field">
+            <label>Enrollment No <span class="req">*</span></label>
+            <input type="text" id="enrollment" placeholder="Enrollment No"
+                   oninput="clearErrIfFilled(this)">
+          </div>
+        </div>
+
+        <div class="grid2">
+          <div class="field">
+            <label>Session &amp; Year <span class="req">*</span></label>
+            <select id="session" onchange="clearErrIfFilled(this)">
+              <option value="">— Select Session —</option>
+            </select>
+          </div>
+          <div class="field">
+            <!-- ══ ACTION 3: ABC-Id now mandatory ══ -->
+            <label>ABC-Id <span class="req">*</span> <span class="note">(12 Digits)</span></label>
+            <input type="text" id="abcId" maxlength="14" placeholder="XXXX-XXXX-XXXX">
+          </div>
+        </div>
+
+        <!-- Exam-only fields -->
+        <div id="examOnlyFields" style="background:var(--exam-blue); border-radius:10px; padding:12px; margin-top:12px; border:1px solid var(--exam-blue-b);">
+          <div class="divider"></div>
+
+          <div class="grid2">
+            <div class="field">
+              <label>Email Address <span class="req">*</span></label>
+              <input type="email" id="stuEmail" placeholder="Enter your email address"
+                     oninput="clearErrIfFilled(this)">
+              <div class="field-msg" id="googleAuthStatus"></div>
+            </div>
+            <div class="field">
+              <label>Section / Group</label>
+              <select id="section"><option value="">— Select —</option></select>
+            </div>
+          </div>
+
+          <div class="grid2">
+            <div class="field">
+              <label>Gender <span class="req">*</span></label>
+              <select id="gender" onchange="clearErrIfFilled(this)">
+                <option value="">— Select —</option>
+                <option>MALE</option><option>FEMALE</option><option>OTHER</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Medium</label>
+              <select id="medium">
+                <option value="">— Select —</option>
+                <option>ENG</option><option>HIN</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="grid2">
+            <div class="field">
+              <label>Category</label>
+              <select id="category">
+                <option value="">— Select —</option>
+                <option>OLDEX</option><option>EX STUDENT</option>
+              </select>
+            </div>
+            <div class="field">
+              <!-- ══ ACTION 3: DOB now mandatory ══ -->
+              <label>Date of Birth <span class="req">*</span></label>
+              <input type="date" id="dob" onchange="clearErrIfFilled(this)">
+            </div>
+          </div>
+
+          <div class="grid2">
+            <div class="field">
+              <!-- ══ ACTION 3: Caste now mandatory ══ -->
+              <label>Caste Category <span class="req">*</span></label>
+              <select id="caste" onchange="clearErrIfFilled(this)">
+                <option value="">— Select —</option>
+                <option>SC</option><option>ST</option><option>NT/VJ</option>
+                <option>SBC</option><option>OBC</option><option>OPEN</option>
+              </select>
+            </div>
+            <div class="field">
+              <!-- ══ ACTION 3: Aadhaar now mandatory ══ -->
+              <label>Aadhaar No <span class="req">*</span> <span class="note">(12 Digits)</span></label>
+              <input type="text" id="aadhaar" maxlength="14" placeholder="XXXX-XXXX-XXXX" inputmode="numeric"
+                     oninput="clearErrIfFilled(this)">
+            </div>
+          </div>
+
+          <div class="field">
+            <!-- ══ ACTION 3: Address now mandatory ══ -->
+            <label>Address <span class="req">*</span></label>
+            <textarea id="address" rows="2" placeholder="Full address" oninput="clearErrIfFilled(this)"></textarea>
+          </div>
+          <div class="field">
+            <!-- ══ ACTION 3: PIN Code now mandatory ══ -->
+            <label>PIN Code <span class="req">*</span></label>
+            <input type="text" id="pincode" maxlength="6" placeholder="6-digit PIN"
+                   inputmode="numeric" oninput="numOnly(this,6); clearErrIfFilled(this)">
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- 4. PHOTO -->
+    <div class="card">
+      <div class="card-header"><span class="icon">📸</span><span>Fee Transaction Photo</span></div>
+      <div class="card-body">
+        <div class="field">
+          <div class="photo-area" id="photoDropArea" onclick="document.getElementById('photoFile').click()">
+            <input type="file" id="photoFile" accept="image/*"
+                   style="display:none" onchange="handlePhoto(event)">
+            <div class="photo-upload-label" id="photoLabel">
+              <span class="up-icon">📷</span>
+              Tap to select fee payment screenshot
+            </div>
+            <img id="photoPreview" class="photo-preview" alt="Preview">
+          </div>
+
+          <div class="photo-btn-row">
+            <button type="button" class="photo-btn upload"
+                    onclick="document.getElementById('photoFile').click()">
+              📤 Upload Paid Fee Receipt
+            </button>
+            <button type="button" class="photo-btn remove hidden" id="photoRemoveBtn"
+                    onclick="removePhoto()">
+              ✕ Remove
+            </button>
+          </div>
+
+          <div class="photo-status" id="photoStatus"></div>
+          <input type="hidden" id="photoUrl">
+        </div>
+      </div>
+    </div>
+
+    <!-- PASSPORT PHOTO -->
+    <div class="card">
+      <div class="card-header"><span class="icon">&#x1F464;</span><span>Passport Photo</span></div>
+      <div class="card-body">
+        <div class="field">
+          <div class="photo-area" id="passportDropArea" onclick="document.getElementById('passportFile').click()">
+            <input type="file" id="passportFile" accept="image/*"
+                   style="display:none" onchange="handlePassportPhoto(event)">
+            <div class="photo-upload-label" id="passportLabel">
+              <span class="up-icon">&#x1F464;</span>
+              Tap to select passport photo
+            </div>
+            <img id="passportPreview" class="photo-preview" alt="Passport Preview">
+          </div>
+          <div class="photo-btn-row">
+            <button type="button" class="photo-btn upload"
+                    onclick="document.getElementById('passportFile').click()">
+              &#x1F4E4; Upload Passport Photo
+            </button>
+            <button type="button" class="photo-btn remove hidden" id="passportRemoveBtn"
+                    onclick="removePassportPhoto()">
+              &#x2715; Remove
+            </button>
+          </div>
+          <div class="photo-status" id="passportStatus"></div>
+          <input type="hidden" id="passportPhotoUrl">
+        </div>
+      </div>
+    </div>
+
+    <!-- 5. DECLARATION -->
+    <div class="card">
+      <div class="card-header"><span class="icon">📜</span><span>Declaration</span></div>
+      <div class="card-body">
+        <div class="field">
+          <p style="font-size:12px; color:var(--muted); line-height:1.65; margin-bottom:12px;">
+            हमने Online Exam Form submit होने के बाद अपने Exam Form वाली मार्कशीट उसके बाद बाकी Lower सेमेस्टर्स की
+            मार्कशीट descending order ( 5/4/3/2/1 + Payment Transaction Page ) इस क्रम में लगाकर Marksheet के Date
+            वाले corner पर staple करके तथा payment page के backside में नीचे दी गई जानकारियां दर्शाकर ये set Exam Form
+            Window पर submit नहीं किया तो मेरा Exam Form Cancel किया जाए।<br><br>
+            1.&nbsp;Name &nbsp;2.&nbsp;DOB &nbsp;3.&nbsp;Email &nbsp;4.&nbsp;Aadhaar &nbsp;5.&nbsp;Mobile
+            &nbsp;6.&nbsp;Address &nbsp;7.&nbsp;Caste &nbsp;8.&nbsp;PIN Code &nbsp;9.&nbsp;Enrollment No.
+            &nbsp;10.&nbsp;ABC/APAAR ID &nbsp;<strong>11.&nbsp;UTR Last 6 Digits*</strong>
+            &nbsp;<strong>12.&nbsp;SERIAL NO</strong> <em style="font-size:10px;color:var(--navy-2);">(Form submit karene par receipt mein dikhega aur is receipt ko SAVE kar lijiyega)</em>
+          </p>
+          <div id="submitAlertMsgBox" style="background:#fff3cd;border:1.5px solid #f59e0b;border-radius:9px;padding:10px 13px;margin-bottom:12px;font-size:12px;font-weight:700;color:#92400e;line-height:1.6;"></div>
+          <label>I Agree to the Declaration <span class="req">*</span></label>
+          <select id="declarationAns" onchange="clearErrIfFilled(this)">
+            <option value="">— Select —</option>
+            <option value="2. AT COLLEGE WINDOW, YES I WILL SUBMIT MARKSHEETS & RECEIPT's XEROXs.">
+              2. AT COLLEGE WINDOW, YES I WILL SUBMIT MARKSHEETS &amp; RECEIPT's XEROXs.
+            </option>
+            <option value="1. CANCEL MY FORM.">1. CANCEL MY FORM.</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- SUBMIT -->
+    <div class="submit-wrap" id="submitWrap">
+      <button class="submit-btn" id="submitBtn" onclick="doSubmit()">Submit Exam Form</button>
+    </div>
+
+    <!-- FORM FOOTER -->
+    <div style="position:relative;text-align:center;margin-top:25px;margin-bottom:15px;font-size:14px;color:#555;font-family:'Arial',sans-serif;letter-spacing:0.5px;">
+      &#x26A1; Crafted by @$)-(&#x25CF;|&lt;  $)-(@&#x20B9;/^\\@
+      <span id="versionBadge" style="position:absolute;right:12px;bottom:0;font-size:10px;color:#b0b8c9;font-weight:400;letter-spacing:.4px;"></span>
+    </div>
+
+  </div><!-- /#mainForm -->
+
+  <!-- Success Screen -->
+  <div id="successScreen" class="hidden">
+    <div id="receiptArea" style="background:#fff;padding:0;max-width:794px;margin:0 auto;">
+
+      <!-- TOP BOX -->
+      <div style="background:#fff;border:2px solid #d1d5db;border-radius:10px;padding:10px 14px;margin-bottom:7px;text-align:center;position:relative;overflow:hidden;">
+        <div class="receipt-watermark"></div>
+        <div style="position:relative;z-index:1;">
+          <span style="font-size:26px;display:block;line-height:1.2;">✅</span>
+          <h2 style="font-family:'DM Serif Display',serif;font-size:16px;color:#0d1f3c;margin:3px 0 2px;">Details Filled Successfully!</h2>
+          <p id="successHeadingTitle" style="font-family:'DM Serif Display',serif;font-size:11px;font-weight:600;color:#1a3460;margin:0 0 6px;"></p>
+          <div style="display:flex;justify-content:space-between;align-items:center;background:#fffbeb;border:1px solid #f59e0b;border-radius:6px;padding:4px 10px;font-size:10px;">
+            <span id="note1PendingText" style="font-weight:600;color:#92400e;text-align:left;"></span>
+            <span style="color:#d97706;font-weight:700;white-space:nowrap;margin-left:8px;">⏳ Pending!</span>
+          </div>
+          <p id="note2SuccessText" style="font-size:8.5px;color:#94a3b8;line-height:1.5;margin:5px 0 0;text-align:left;"></p>
+        </div>
+      </div>
+
+      <!-- MIDDLE ROW — Left + Right boxes -->
+      <div id="receiptMiddleRow" style="display:flex;gap:7px;align-items:stretch;">
+
+        <!-- LEFT BOX — Student Receipt -->
+        <div style="flex:1;background:#fff;border:2.5px solid #0d1f3c;border-radius:10px;overflow:hidden;position:relative;min-width:0;">
+          <div class="receipt-watermark"></div>
+          <div style="background:linear-gradient(135deg,#0d1f3c,#1a3460);padding:5px 10px;position:relative;z-index:1;">
+            <span id="leftBoxHeading" style="font-size:8.5px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:#fde68a;"></span>
+          </div>
+          <div style="padding:7px 10px;position:relative;z-index:1;" id="successDetails"></div>
+        </div>
+
+        <!-- RIGHT BOX — Declaration Data by Student -->
+        <div style="flex:1;background:#fff;border:2.5px solid #b45309;border-radius:10px;overflow:hidden;position:relative;min-width:0;">
+          <div class="receipt-watermark"></div>
+          <div style="background:linear-gradient(135deg,#92400e,#b45309);padding:5px 10px;position:relative;z-index:1;">
+            <span id="rightBoxHeading" style="font-size:8.5px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:#fde68a;"></span>
+          </div>
+          <div style="padding:7px 10px;position:relative;z-index:1;" id="declarationReceipt"></div>
+        </div>
+
+      </div><!-- /#receiptMiddleRow -->
+
+    </div><!-- /#receiptArea -->
+
+    <!-- Action Buttons -->
+    <div style="margin:10px 12px 0;display:flex;gap:10px;">
+      <button class="new-form-btn" onclick="goHome()" style="flex:1;margin-top:0;padding:12px;">← Back to Home</button>
+      <button onclick="saveReceiptImage()" id="saveReceiptBtn" style="flex:1;padding:12px;background:#059669;color:#fff;border:none;border-radius:10px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;cursor:pointer;">💾 Save Receipt</button>
+    </div>
+    <div id="saveStatus" style="text-align:center;font-size:12px;margin:6px 12px 16px;color:var(--muted);font-weight:500;"></div>
+  </div>
+
+</div><!-- /#formScreen -->
+
+<!-- Custom Confirm Modal -->
+<div id="customModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:#fff;border-radius:16px;max-width:340px;width:100%;padding:24px 20px;box-shadow:0 8px 40px rgba(0,0,0,.25);animation:fadeIn .2s ease;">
+    <div style="font-family:'DM Serif Display',serif;font-size:16px;font-weight:700;color:var(--navy);margin-bottom:6px;" id="modalTitle"></div>
+    <div style="font-size:13px;color:var(--muted);line-height:1.65;margin-bottom:20px;" id="modalMsg"></div>
+    <div style="display:flex;gap:10px;">
+      <button id="modalCancel" style="flex:1;padding:12px;border-radius:9px;border:1.5px solid var(--border);background:#fff;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;color:var(--muted);cursor:pointer;">Cancel</button>
+      <button id="modalOk"     style="flex:1;padding:12px;border-radius:9px;border:none;background:var(--navy);color:#fff;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;cursor:pointer;">Submit</button>
+    </div>
+  </div>
+</div>
+
+
+<script>
+// ── CONFIG (top se inject ho raha hai) ────────────────────────
+var PROJECT_VERSION  = '${PROJECT_VERSION}';
+var FORM_HEADING     = '${FORM_HEADING}';
+var GAS_URL          = '${GAS_URL}';
+var SUBMIT_ALERT_MSG = '${SUBMIT_ALERT_MSG}';
+var NOTE1_PENDING    = '${NOTE1_PENDING}';
+var NOTE2_SUCCESS    = '${NOTE2_SUCCESS}';
+var ERR_ROLL         = '${ERR_ROLL}';
+var ERR_UTR          = '${ERR_UTR}';
+var ERR_TRANS        = '${ERR_TRANS}';
+var ERR_DUP          = '${ERR_DUP}';
+var RECEIPT_BOX_LEFT  = '${RECEIPT_BOX_LEFT}';
+var RECEIPT_BOX_RIGHT = '${RECEIPT_BOX_RIGHT}';
+
+// ── Google Sign-in Verification variables ─────────────────────
+var googleUserEmail   = '';
+var isGoogleVerified  = false;
+// ══ ACTION 1: Landing-level login state ══════════════════════
+var isLandingVerified = false;   // true after Gmail login on landing
+var landingUserEmail  = '';       // persists through form resets
+
+// ══ SESSION TIMEOUT (2 hours) ════════════════════════════════
+var LOGIN_SESSION_KEY = 'eformsLoginSession';
+var LOGIN_SESSION_TTL = 2 * 60 * 60 * 1000;   // 2 hours in ms
+var sessionCheckInterval = null;
+
+// ══════════════════════════════════════════════════════════════
+//  CACHE CONFIG
+// ══════════════════════════════════════════════════════════════
+var CACHE_MS       = 30 * 60 * 1000;
+var DRAFT_KEY      = 'examFormDraft';
+var CLASS_KEY      = 'eformsClassData';
+var CLASS_TS_KEY   = 'eformsClassDataTs';
+var NOTICE_KEY     = 'eformsNoticeHtml';
+
+// ── Cache helpers ──────────────────────────────────────────────
+function cacheSet(key, value, withTimestamp) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    if (withTimestamp) localStorage.setItem(key + '_ts', Date.now().toString());
+  } catch(e) {}
+}
+
+function cacheGet(key, maxAgeMs) {
+  try {
+    var raw = localStorage.getItem(key);
+    if (!raw) return null;
+    if (maxAgeMs) {
+      var ts = parseInt(localStorage.getItem(key + '_ts') || '0', 10);
+      if (Date.now() - ts > maxAgeMs) {
+        localStorage.removeItem(key);
+        localStorage.removeItem(key + '_ts');
+        return null;
+      }
+    }
+    return JSON.parse(raw);
+  } catch(e) { return null; }
+}
+
+function cacheClear(key) {
+  try {
+    localStorage.removeItem(key);
+    localStorage.removeItem(key + '_ts');
+  } catch(e) {}
+}
+
+// ── GAS API HELPERS ────────────────────────────────────────────
+function gasGet(params) {
+  var qs = Object.keys(params).map(function(k) {
+    return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
+  }).join('&');
+  return fetch(GAS_URL + '?' + qs)
+    .then(function(r) {
+      if (!r.ok) throw new Error('Network error: ' + r.status);
+      return r.json();
+    });
+}
+
+function gasPost(data) {
+  return fetch(GAS_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify(data)
+  }).then(function(r) {
+    if (!r.ok) throw new Error('Network error: ' + r.status);
+    return r.json();
+  });
+}
+
+// ══ STATE ═════════════════════════════════════════════════════
+var formType       = 'exam';
+var classes        = [];
+var sections       = [];
+var sessions       = [];
+var curClass       = null;
+var thCount        = 0;
+var prCount        = 0;
+var calcTotal      = 0;
+var dupStatus      = { roll: null, utr: null, trans: null };
+var photoUrl       = '';
+var photoUploading = false;
+var classesLoaded  = false;
+var qrCodeLink          = '';
+var noticeHtml          = '';
+var passportPhotoUrl    = '';
+var passportFolderLink  = '';
+var formStatus     = '';
+var landingHeading = FORM_HEADING;
+
+var MAX_TH     = 8;
+var MAX_PR     = 5;
+var MAX_RVL_TH = 2;
+
+var EMAIL_RE   = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$/;
+var MAX_PHOTO_BYTES = 3 * 1024 * 1024;
+
+// ══ HELPERS ═══════════════════════════════════════════════════
+function numOnly(el, maxLen) {
+  el.value = el.value.replace(/[^0-9]/g, '').substring(0, maxLen);
+}
+function clearErrIfFilled(el) {
+  if (el && el.classList.contains('error-input') && el.value.trim())
+    el.classList.remove('error-input');
+}
+
+// ── Passport filename builder ──────────────────────────────────
+function buildPassportFileName(origName) {
+  var roll = (document.getElementById('rollNo').value || '').trim().replace(/^'/, '') || 'NOROLL';
+  var name = (document.getElementById('stuName').value || '').trim() || 'NONAME';
+  roll = roll.replace(/[^a-zA-Z0-9]/g, '');
+  name = name.replace(/[^a-zA-Z0-9 ]/g, '').trim();
+  var ext  = origName.substring(origName.lastIndexOf('.')) || '.jpg';
+  return roll + '_' + name + ext;
+}
+
+// ══ ACTION 1: LANDING → FORM (with login guard) ═══════════════
+function selectType(type) {
+  // ── Guard: Gmail login required before accessing any form ────
+  if (!isLandingVerified) {
+    // Visually shake the login box to prompt user
+    var lb = document.getElementById('landingGoogleBtn');
+    if (lb) {
+      lb.style.transform = 'scale(1.08)';
+      setTimeout(function() { lb.style.transform = ''; }, 200);
+    }
+    return;
+  }
+
+  formType = type;
+  var isReval = (type === 'reval');
+
+  document.getElementById('landingScreen').classList.add('hidden');
+  document.getElementById('formScreen').classList.remove('hidden');
+
+  var badge = document.getElementById('formBadge');
+  badge.textContent = isReval ? 'REVAL' : 'EXAM';
+  badge.className   = 'form-type-badge ' + (isReval ? 'badge-reval' : 'badge-exam');
+  document.getElementById('formHeading').textContent =
+    isReval ? 'Revaluation Fee Portal' : (landingHeading || FORM_HEADING);
+  document.getElementById('submitBtn').textContent =
+    isReval ? 'Submit Revaluation Form' : 'Submit Exam Form';
+
+  document.getElementById('prField').classList.toggle('hidden', isReval);
+  document.getElementById('motherWrap').classList.toggle('hidden', isReval);
+  document.getElementById('examOnlyFields').classList.toggle('hidden', isReval);
+  document.getElementById('thLabel').innerHTML = isReval
+    ? 'Papers for Revaluation <span class="req">*</span>'
+    : 'Theory Fail Subjects <span class="req">*</span>';
+
+  document.getElementById('feeDate').valueAsDate = new Date();
+  bindFormatters();
+
+  // ── Show Gmail login status in email field area ─────────────
+  var authStatusEl = document.getElementById('googleAuthStatus');
+  if (authStatusEl && landingUserEmail) {
+    authStatusEl.innerHTML = '<span style="color:var(--success);font-weight:bold;">🔒 Logged in via Gmail: ' + landingUserEmail + '</span>';
+  }
+
+  // ── Show logged-in badge in form header ───────────────────────
+  var badge2 = document.getElementById('loggedInBadge');
+  if (badge2 && landingUserEmail) {
+    badge2.textContent = '✅ ' + landingUserEmail;
+    badge2.classList.remove('hidden');
+  }
+
+  if (!classesLoaded) {
+    loadClasses();
+  } else {
+    populateSelect('session', sessions, '\\u2014 Select Session \\u2014');
+    populateSelect('section', sections, '\\u2014 Select Section \\u2014');
+    buildDropdown();
+    applyDraft();
+  }
+
+  var mForm = document.getElementById('mainForm');
+  mForm.addEventListener('input',  saveDraft);
+  mForm.addEventListener('change', saveDraft);
+}
+
+function goBack() {
+  document.getElementById('formScreen').classList.add('hidden');
+  document.getElementById('landingScreen').classList.remove('hidden');
+  document.getElementById('successScreen').classList.add('hidden');
+  document.getElementById('mainForm').classList.remove('hidden');
+  document.getElementById('submitWrap').classList.remove('hidden');
+  resetForm(false);
+}
+function goHome() { goBack(); }
+
+// ══ LOAD CLASSES ══════════════════════════════════════════════
+function applyClassData(data) {
+  classes  = data.classes  || [];
+  sessions = data.sessions || [];
+  sections = data.sections || [];
+
+  if (data.heading) {
+    landingHeading = data.heading;
+    document.getElementById('landingHeading').textContent = data.heading;
+    document.getElementById('formHeading').textContent =
+      formType === 'reval' ? 'Revaluation Fee Portal' : data.heading;
+  }
+  populateSelect('session', sessions, '— Select Session —');
+  populateSelect('section', sections, '— Select Section —');
+  classesLoaded = true;
+  buildDropdown();
+  applyDraft();
+
+  if (data.passportFolderLink) passportFolderLink = data.passportFolderLink;
+
+  if (data.qrCodeLink) {
+    qrCodeLink = data.qrCodeLink;
+    document.getElementById('qrSection').classList.remove('hidden');
+    var qrImgEl = document.getElementById('qrImg');
+    if (qrImgEl) { qrImgEl.style.display = ''; qrImgEl.src = data.qrCodeLink; }
+  }
+
+  if (data.noticeHtml) {
+    noticeHtml = data.noticeHtml;
+    cacheSet(NOTICE_KEY, data.noticeHtml, false);
+    document.getElementById('noticeBody').innerHTML = data.noticeHtml;
+    document.getElementById('noticeCard').classList.remove('hidden');
+  }
+}
+
+function loadClasses() {
+  var cachedNotice = cacheGet(NOTICE_KEY, null);
+  if (cachedNotice) {
+    document.getElementById('noticeBody').innerHTML = cachedNotice;
+    document.getElementById('noticeCard').classList.remove('hidden');
+    noticeHtml = cachedNotice;
+  }
+
+  var cachedClass = cacheGet(CLASS_KEY, CACHE_MS);
+  if (cachedClass) {
+    applyClassData(cachedClass);
+    setClassMsg('', '');
+  } else {
+    setClassMsg('Loading classes…', 'info');
+  }
+
+  gasGet({ action: 'getClasses' })
+    .then(function(data) {
+      if (data.error) throw new Error(data.error);
+      cacheSet(CLASS_KEY, data, true);
+      if (data.noticeHtml) {
+        cacheSet(NOTICE_KEY, data.noticeHtml, false);
+      }
+      applyClassData(data);
+      setClassMsg('', '');
+    })
+    .catch(function(err) {
+      if (!cachedClass) setClassMsg('⚠ Could not load: ' + (err.message || err), 'err');
+    });
+}
+
+function setClassMsg(msg, type) {
+  var el = document.getElementById('classMsg');
+  el.textContent = msg;
+  el.className = 'field-msg ' + type;
+}
+
+// ══ DROPDOWNS ═════════════════════════════════════════════════
+function populateSelect(id, arr, defaultText) {
+  var sel = document.getElementById(id);
+  if (!sel) return;
+  sel.innerHTML = '<option value="">' + defaultText + '</option>';
+  arr.forEach(function (item) {
+    var opt = document.createElement('option');
+    opt.value = item; opt.textContent = item;
+    sel.appendChild(opt);
+  });
+}
+
+function buildDropdown() {
+  var sel = document.getElementById('examName');
+  sel.innerHTML = '<option value="">— Select Class —</option>';
+  curClass = null; resetCounters();
+  classes.forEach(function (c) {
+    var isRevalClass = /rvl|reval|revaluation/i.test(c.name);
+    if (formType === 'exam' && isRevalClass) return;
+    var opt = document.createElement('option');
+    opt.value = c.name; opt.textContent = c.name;
+    opt.dataset.th = c.theoryFee;
+    opt.dataset.pr = c.practicalFee;
+    sel.appendChild(opt);
+  });
+}
+
+function onClassChange() {
+  var sel = document.getElementById('examName');
+  var opt = sel.options[sel.selectedIndex];
+
+  thCount = 0; prCount = 0;
+  document.getElementById('thVal').textContent = '0';
+  document.getElementById('prVal').textContent = '0';
+  ['thPlus','thMinus','prPlus','prMinus'].forEach(function(id) {
+    document.getElementById(id).disabled = true;
+  });
+  document.getElementById('calcFeeAmt').textContent  = '₹ —';
+  document.getElementById('calcFeeType').textContent = '';
+  document.getElementById('feeDiffLine').textContent = '';
+  document.getElementById('feeDiffLine').className   = 'fee-diff';
+  calcTotal = 0;
+
+  if (!opt.value) { curClass = null; return; }
+
+  var thFee = parseFloat(opt.dataset.th) || 0;
+  var prFee = parseFloat(opt.dataset.pr) || 0;
+
+  if (formType === 'reval') {
+    curClass = { name: opt.value, theoryFee: 0, practicalFee: 0, isReval: true };
+    setCounterEnabled('th', true);
+    document.getElementById('thInfo').textContent = 'Max 2 papers';
+  } else {
+    curClass = { name: opt.value, theoryFee: thFee, practicalFee: prFee, isReval: false };
+    setCounterEnabled('th', thFee > 0);
+    setCounterEnabled('pr', prFee > 0);
+    document.getElementById('thInfo').textContent = thFee > 0 ? 'Max ' + MAX_TH : 'N/A';
+    document.getElementById('prInfo').textContent = prFee > 0 ? 'Max ' + MAX_PR : 'Not applicable';
+  }
+  updateCounterBtns();
+  recalc();
+  saveDraft();
+}
+
+// ══ COUNTERS ══════════════════════════════════════════════════
+function changeCount(type, delta) {
+  if (!curClass) return;
+  var max = (type === 'th') ? (formType === 'reval' ? MAX_RVL_TH : MAX_TH) : MAX_PR;
+  if (type === 'th') thCount = Math.max(0, Math.min(max, thCount + delta));
+  else               prCount = Math.max(0, Math.min(MAX_PR, prCount + delta));
+  document.getElementById('thVal').textContent = thCount;
+  document.getElementById('prVal').textContent = prCount;
+  updateCounterBtns(); recalc(); saveDraft();
+}
+
+function setCounterEnabled(type, enabled) {
+  document.getElementById(type + 'Plus').disabled  = !enabled;
+  document.getElementById(type + 'Minus').disabled = true;
+}
+
+function updateCounterBtns() {
+  if (!curClass) return;
+  var thMax = formType === 'reval' ? MAX_RVL_TH : MAX_TH;
+  if (formType === 'reval' || curClass.theoryFee > 0) {
+    document.getElementById('thPlus').disabled  = (thCount >= thMax);
+    document.getElementById('thMinus').disabled = (thCount <= 0);
+  }
+  if (formType !== 'reval' && curClass.practicalFee > 0) {
+    document.getElementById('prPlus').disabled  = (prCount >= MAX_PR);
+    document.getElementById('prMinus').disabled = (prCount <= 0);
+  }
+}
+
+function resetCounters() {
+  thCount = 0; prCount = 0;
+  document.getElementById('thVal').textContent = '0';
+  document.getElementById('prVal').textContent = '0';
+  ['thPlus','thMinus','prPlus','prMinus'].forEach(function(id) {
+    document.getElementById(id).disabled = true;
+  });
+  document.getElementById('calcFeeAmt').textContent  = '₹ —';
+  document.getElementById('calcFeeType').textContent = '';
+  document.getElementById('feeDiffLine').textContent = '';
+  document.getElementById('feeDiffLine').className   = 'fee-diff';
+  calcTotal = 0;
+}
+
+// ══ FEE CALCULATION ═══════════════════════════════════════════
+function recalc() {
+  if (!curClass) { calcTotal = 0; return; }
+  if (formType === 'reval') {
+    calcTotal = thCount === 1 ? 160 : thCount >= 2 ? 310 : 0;
+    document.getElementById('calcFeeAmt').textContent  = calcTotal > 0 ? '₹ ' + calcTotal : '₹ —';
+    document.getElementById('calcFeeType').textContent = calcTotal > 0 ? 'Revaluation Fixed Fee' : '';
+  } else {
+    var has     = thCount > 0 || prCount > 0;
+    var formFee = (has && !/rvl|reval|revaluation/i.test(curClass.name)) ? 75 : 0;
+    calcTotal   = (thCount * curClass.theoryFee) + (prCount * curClass.practicalFee) + formFee;
+    document.getElementById('calcFeeAmt').textContent  = has ? '₹ ' + calcTotal : '₹ —';
+    document.getElementById('calcFeeType').textContent = has ? '' : 'Select subjects first';
+  }
+  updateDiff();
+}
+
+function updateDiff() {
+  var paid = parseFloat(document.getElementById('feePaid').value) || 0;
+  var el   = document.getElementById('feeDiffLine');
+  if (!paid || !calcTotal) { el.textContent = ''; el.className = 'fee-diff'; return; }
+  var diff = paid - calcTotal;
+  if (diff === 0)    { el.textContent = '✅ Fee matches exactly';           el.className = 'fee-diff ok'; }
+  else if (diff > 0) { el.textContent = '⚠ ₹' + diff + ' excess paid';     el.className = 'fee-diff over'; }
+  else               { el.textContent = '⚠ ₹' + Math.abs(diff) + ' short'; el.className = 'fee-diff over'; }
+}
+
+// ══ DUPLICATE CHECK ═══════════════════════════════════════════
+function dupCheck(field) {
+  var fieldElMap = { roll:'rollNo', utr:'utrNo', trans:'transId' };
+  var v = document.getElementById(fieldElMap[field]).value.trim();
+  if (!v || v.length !== 6) return;
+
+  var checkVal = (field === 'roll' && formType === 'reval') ? 'R' + v : v;
+
+  setFieldIcon(field, '<span class="spinner"></span>');
+  setFieldMsg(field, '', '');
+
+  gasGet({ action: 'checkDuplicate', value: checkVal, field: field })
+    .then(function(res) {
+      if (res.exists) {
+        dupStatus[field] = 'err';
+        setFieldIcon(field, '❌');
+        setFieldMsg(field, 'Already submitted!', 'err');
+        document.getElementById(fieldElMap[field]).classList.add('error-input');
+      } else {
+        dupStatus[field] = 'ok';
+        setFieldIcon(field, '✅');
+        setFieldMsg(field, '', '');
+        document.getElementById(fieldElMap[field]).classList.remove('error-input');
+      }
+    })
+    .catch(function() {
+      setFieldIcon(field, '');
+      dupStatus[field] = 'ok';
+    });
+}
+
+function clearDup(field) {
+  dupStatus[field] = null;
+  setFieldIcon(field, '');
+  setFieldMsg(field, '', '');
+  var elMap = { roll:'rollNo', utr:'utrNo', trans:'transId' };
+  var el = document.getElementById(elMap[field]);
+  if (el) el.classList.remove('error-input');
+}
+function clearAllDup() { ['roll','utr','trans'].forEach(clearDup); }
+
+var iconIds = { roll:'rollIcon', utr:'utrIcon',  trans:'transIcon' };
+var msgIds  = { roll:'rollMsg',  utr:'utrMsg',   trans:'transMsg'  };
+function setFieldIcon(field, html) { document.getElementById(iconIds[field]).innerHTML = html; }
+function setFieldMsg(field, text, cls) {
+  var el = document.getElementById(msgIds[field]);
+  el.textContent = text; el.className = 'field-msg ' + cls;
+}
+
+// ══ PHOTO UPLOAD ══════════════════════════════════════════════
+function handlePhoto(evt) {
+  var file = evt.target.files[0];
+  if (!file) return;
+
+  if (file.size > MAX_PHOTO_BYTES) {
+    var statusEl = document.getElementById('photoStatus');
+    statusEl.textContent = '⚠ Reduce Image Size and try again.';
+    statusEl.className   = 'photo-status warn';
+    document.getElementById('photoFile').value = '';
+    return;
+  }
+
+  var reader = new FileReader();
+  reader.onload = function (e) {
+    var img = document.getElementById('photoPreview');
+    img.src = e.target.result; img.style.display = 'block';
+    document.getElementById('photoDropArea').classList.add('has-photo');
+    document.getElementById('photoLabel').style.display = 'none';
+  };
+  reader.readAsDataURL(file);
+
+  var statusEl = document.getElementById('photoStatus');
+  statusEl.textContent = '⏳ Uploading…';
+  statusEl.className   = 'photo-status uploading';
+  photoUploading = true;
+  photoUrl = '';
+  document.getElementById('photoUrl').value = '';
+  document.getElementById('photoRemoveBtn').classList.remove('hidden');
+
+  var r2 = new FileReader();
+  r2.onload = function (e) {
+    var base64 = e.target.result.split(',')[1];
+    gasPost({ action: 'uploadPhoto', base64Data: base64, mimeType: file.type, fileName: file.name })
+      .then(function(res) {
+        photoUploading = false;
+        if (res.success) {
+          photoUrl = res.url;
+          document.getElementById('photoUrl').value = res.url;
+          statusEl.textContent = '✅ Photo uploaded successfully';
+          statusEl.className   = 'photo-status done';
+        } else {
+          statusEl.textContent = '⚠ Upload failed: ' + res.message;
+          statusEl.className   = 'photo-status error';
+        }
+      })
+      .catch(function(err) {
+        photoUploading = false;
+        statusEl.textContent = '⚠ Upload failed: ' + (err.message || err);
+        statusEl.className   = 'photo-status error';
+      });
+  };
+  r2.readAsDataURL(file);
+}
+
+function removePhoto() {
+  photoUrl = ''; photoUploading = false;
+  document.getElementById('photoUrl').value  = '';
+  document.getElementById('photoFile').value = '';
+  var img = document.getElementById('photoPreview');
+  img.src = ''; img.style.display = 'none';
+  document.getElementById('photoDropArea').classList.remove('has-photo');
+  document.getElementById('photoLabel').style.display = '';
+  document.getElementById('photoStatus').textContent = '';
+  document.getElementById('photoStatus').className   = 'photo-status';
+  document.getElementById('photoRemoveBtn').classList.add('hidden');
+}
+
+// ══ PASSPORT PHOTO ════════════════════════════════════════════
+var passportFileObj = null;
+
+function handlePassportPhoto(evt) {
+  var file = evt.target.files[0];
+  if (!file) return;
+
+  if (file.size > MAX_PHOTO_BYTES) {
+    var st = document.getElementById('passportStatus');
+    st.textContent = '⚠ Image too large. Reduce size and try again.';
+    st.className = 'photo-status warn';
+    document.getElementById('passportFile').value = '';
+    return;
+  }
+
+  passportFileObj  = file;
+  passportPhotoUrl = '';
+  document.getElementById('passportPhotoUrl').value = '';
+
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    var img = document.getElementById('passportPreview');
+    img.src = e.target.result; img.style.display = 'block';
+    document.getElementById('passportDropArea').classList.add('has-photo');
+    document.getElementById('passportLabel').style.display = 'none';
+  };
+  reader.readAsDataURL(file);
+
+  var st = document.getElementById('passportStatus');
+  st.textContent = '✅ Photo selected';
+  st.className = 'photo-status done';
+  document.getElementById('passportRemoveBtn').classList.remove('hidden');
+}
+
+function removePassportPhoto() {
+  passportPhotoUrl = '';
+  passportFileObj  = null;
+  document.getElementById('passportPhotoUrl').value = '';
+  document.getElementById('passportFile').value = '';
+  var img = document.getElementById('passportPreview');
+  img.src = ''; img.style.display = 'none';
+  document.getElementById('passportDropArea').classList.remove('has-photo');
+  document.getElementById('passportLabel').style.display = '';
+  document.getElementById('passportStatus').textContent = '';
+  document.getElementById('passportStatus').className = 'photo-status';
+  document.getElementById('passportRemoveBtn').classList.add('hidden');
+}
+
+// ══ CUSTOM MODAL ══════════════════════════════════════════════
+function showModal(title, msg, okText) {
+  return new Promise(function(resolve) {
+    var modal = document.getElementById('customModal');
+    document.getElementById('modalTitle').textContent = title;
+    document.getElementById('modalMsg').textContent   = msg;
+    document.getElementById('modalOk').textContent    = okText || 'OK';
+    modal.style.display = 'flex';
+    function cleanup(result) {
+      modal.style.display = 'none';
+      document.getElementById('modalOk').removeEventListener('click', onOk);
+      document.getElementById('modalCancel').removeEventListener('click', onCancel);
+      resolve(result);
+    }
+    function onOk()     { cleanup(true);  }
+    function onCancel() { cleanup(false); }
+    document.getElementById('modalOk').addEventListener('click', onOk);
+    document.getElementById('modalCancel').addEventListener('click', onCancel);
+  });
+}
+
+// ══ ALERTS ════════════════════════════════════════════════════
+function showAlert(type, msg) {
+  document.getElementById('alertIcon').textContent = { error:'⛔', success:'✅', info:'ℹ️' }[type] || '';
+  document.getElementById('alertText').textContent = msg;
+  document.getElementById('alertBox').className = 'alert ' + type + ' show';
+  document.getElementById('alertBox').scrollIntoView({ behavior:'smooth', block:'center' });
+}
+function hideAlert() { document.getElementById('alertBox').className = 'alert'; }
+
+// ══ SUBMIT ════════════════════════════════════════════════════
+function doSubmit() {
+  hideAlert();
+  document.querySelectorAll('.error-input').forEach(function(el) { el.classList.remove('error-input'); });
+
+  var isReval = formType === 'reval';
+
+  function val(cond, msg, elId) {
+    if (!cond) {
+      if (elId) {
+        var el = document.getElementById(elId);
+        if (el) { el.classList.add('error-input'); el.focus(); }
+      }
+      showAlert('error', msg); return false;
+    }
+    return true;
+  }
+
+  var examName   = document.getElementById('examName').value;
+  var rollNo     = document.getElementById('rollNo').value.trim();
+  var feePaid    = document.getElementById('feePaid').value;
+  var utrNo      = document.getElementById('utrNo').value.trim();
+  var transId    = document.getElementById('transId').value.trim();
+  var stuName    = document.getElementById('stuName').value.trim();
+  var mobile     = document.getElementById('mobile').value.trim();
+  var enrollment = document.getElementById('enrollment').value.trim();
+  var session    = document.getElementById('session').value;
+  var upiApp     = document.getElementById('upiApp').value;
+  var feeDate    = document.getElementById('feeDate').value;
+  var declAns    = document.getElementById('declarationAns').value;
+
+  if (!val(examName, 'Please select Examination / Class', 'examName')) return;
+  if (!val(thCount > 0 || (!isReval && prCount > 0),
+           isReval ? 'Select at least 1 paper for Revaluation' : 'Select at least 1 Theory subject', null)) return;
+  if (!val(feePaid && parseFloat(feePaid) > 0, 'Fee Paid amount is required', 'feePaid')) return;
+  if (!val(utrNo && utrNo.length === 6, 'UTR No. must be exactly 6 digits', 'utrNo')) return;
+  if (!val(transId && transId.length === 6, 'Transaction ID must be exactly 6 digits', 'transId')) return;
+  if (!val(upiApp, 'Please select UPI Payment App', 'upiApp')) return;
+  if (!val(feeDate, 'Transaction Date is required', 'feeDate')) return;
+
+  // UTR aur Transaction ID same nahi hone chahiye (000000 exempt)
+  if (utrNo === transId && utrNo !== '000000') {
+    document.getElementById('utrNo').classList.add('error-input');
+    document.getElementById('transId').classList.add('error-input');
+    showAlert('error', '⚠ CHECK UTR No. & TRANSACTION ID — Dono same numbers hain!');
+    document.getElementById('utrNo').focus();
+    return;
+  }
+
+  if (!val(rollNo && rollNo.length === 6, 'Roll No must be exactly 6 digits', 'rollNo')) return;
+  if (!val(stuName, 'Student Name is required', 'stuName')) return;
+  if (!val(mobile && mobile.length === 10, '10-digit Mobile No required', 'mobile')) return;
+  if (!val(enrollment, 'Enrollment No is required', 'enrollment')) return;
+  if (!val(session, 'Session & Year is required', 'session')) return;
+  if (!val(declAns === "2. AT COLLEGE WINDOW, YES I WILL SUBMIT MARKSHEETS & RECEIPT's XEROXs.",
+           'You must select option 2 in Declaration', 'declarationAns')) return;
+
+  if (photoUploading) { showAlert('info', 'Fee receipt still uploading, please wait…'); return; }
+
+  if (!passportFileObj) {
+    showAlert('error', '⚠ Please Upload Passport Photo!');
+    document.getElementById('passportDropArea').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    return;
+  }
+
+  // ── Exam-only validations ─────────────────────────────────────
+  var email = '', mName = '', finalPincode = '';
+  if (!isReval) {
+    mName        = document.getElementById('motherName').value.trim();
+    email        = document.getElementById('stuEmail').value.trim();
+    finalPincode = document.getElementById('pincode').value.trim();
+
+    if (!val(mName, "Mother's Name is required", 'motherName')) return;
+
+    if (!val(email, 'Email Address is required', 'stuEmail')) return;
+
+    // ══ ACTION 3: New mandatory fields ═══════════════════════════
+    var dobVal     = document.getElementById('dob').value;
+    var aadhaarRaw = (document.getElementById('aadhaar').value || '').replace(/-/g, '').trim();
+    var addressVal = document.getElementById('address').value.trim();
+    var casteVal   = document.getElementById('caste').value;
+    var abcRaw     = (document.getElementById('abcId').value || '').replace(/-/g, '').trim();
+
+    if (!val(dobVal, 'Date of Birth is required', 'dob')) return;
+    if (!val(aadhaarRaw && aadhaarRaw.length === 12, 'Aadhaar No (12 digits) is required', 'aadhaar')) return;
+    if (!val(addressVal, 'Address is required', 'address')) return;
+    if (!val(casteVal, 'Caste Category is required', 'caste')) return;
+    if (!val(finalPincode && finalPincode.length === 6, 'PIN Code (6 digits) is required', 'pincode')) return;
+    if (!val(abcRaw && abcRaw.length === 12, 'ABC/APAAR ID (12 digits) is required', 'abcId')) return;
+    // ═════════════════════════════════════════════════════════════
+  } else {
+    // ── ACTION 1: For Reval form, use landing login email ────────
+    email = landingUserEmail;
+  }
+
+  // ── Submit se pehle custom modal confirm ─────────────────────
+  showModal(FORM_HEADING, SUBMIT_ALERT_MSG, 'Submit').then(function(confirmed) {
+    if (!confirmed) return;
+
+  if (rollNo.startsWith('0'))       rollNo       = "'" + rollNo;
+  if (utrNo.startsWith('0'))        utrNo        = "'" + utrNo;
+  if (transId.startsWith('0'))      transId      = "'" + transId;
+  if (finalPincode && finalPincode.startsWith('0')) finalPincode = "'" + finalPincode;
+
+  var fd = {
+    formType: formType, examName: examName, theory: thCount,
+    practical: isReval ? 0 : prCount, calcTotal: calcTotal,
+    feePaid: feePaid, utrNo: utrNo, transId: transId, rollNo: rollNo,
+    name: stuName, mobile: mobile, enrollment: enrollment,
+    session: session, feeDate: feeDate, upiApp: upiApp,
+    photoUrl:         document.getElementById('photoUrl').value,
+    passportPhotoUrl: '',
+    abcId:    document.getElementById('abcId').value,
+    declAns:  declAns, email: email, gmailLogin: landingUserEmail,
+    section:    !isReval ? document.getElementById('section').value   : '',
+    motherName: mName,
+    gender:     !isReval ? document.getElementById('gender').value    : '',
+    medium:     !isReval ? document.getElementById('medium').value    : '',
+    category:   !isReval ? document.getElementById('category').value  : '',
+    dob:        !isReval ? document.getElementById('dob').value       : '',
+    caste:      !isReval ? document.getElementById('caste').value     : '',
+    aadhaar:    !isReval ? document.getElementById('aadhaar').value   : '',
+    address:    !isReval ? document.getElementById('address').value   : '',
+    pincode:    finalPincode
+  };
+
+  var btn     = document.getElementById('submitBtn');
+  var btnText = isReval ? 'Submit Revaluation Form' : 'Submit Exam Form';
+  btn.disabled = true; btn.textContent = '⏳ Verifying…';
+
+  var rollCheck      = (formType === 'reval' ? 'R' : '') + rollNo.replace(/^'/, '');
+  var utrRaw         = utrNo.replace(/^'/, '');
+  var transRaw       = transId.replace(/^'/, '');
+  var classNameLower = examName.trim().toLowerCase();
+
+  var aadhaarRaw2 = !isReval ? (document.getElementById('aadhaar').value || '').replace(/-/g,'').trim() : '';
+  var abcRaw2     = !isReval ? (document.getElementById('abcId').value   || '').replace(/-/g,'').trim() : '';
+
+  var dupChecks = [
+    gasGet({ action: 'checkDuplicate', value: rollCheck,       field: 'roll' }),
+    gasGet({ action: 'checkDuplicate', value: utrRaw,          field: utrRaw   === '000000' ? 'skip' : 'utr'   }),
+    gasGet({ action: 'checkDuplicate', value: transRaw,        field: transRaw === '000000' ? 'skip' : 'trans' })
+  ];
+
+  // ERR4:CA — Aadhaar full + class
+  if (!isReval && aadhaarRaw2 && aadhaarRaw2.length >= 12) {
+    dupChecks.push(gasGet({ action: 'checkDuplicate', value: aadhaarRaw2 + '||' + classNameLower, field: 'aadhaar_class' }));
+  } else { dupChecks.push(Promise.resolve({ exists: false })); }
+
+  // ERR5:IA — ABC full + class
+  if (!isReval && abcRaw2 && abcRaw2.length >= 12) {
+    dupChecks.push(gasGet({ action: 'checkDuplicate', value: abcRaw2 + '||' + classNameLower, field: 'abc_class' }));
+  } else { dupChecks.push(Promise.resolve({ exists: false })); }
+
+  // ERR7:IACAL6 — ABC last 6 + Aadhaar last 6 (same row) + same class
+  var aadhaarLast6 = aadhaarRaw2.length >= 6 ? aadhaarRaw2.slice(-6) : '';
+  var abcLast6     = abcRaw2.length     >= 6 ? abcRaw2.slice(-6)     : '';
+  if (!isReval && aadhaarLast6 && abcLast6) {
+    dupChecks.push(gasGet({ action: 'checkDuplicate', value: abcLast6 + '||' + aadhaarLast6 + '||' + classNameLower, field: 'iacal6_class' }));
+  } else { dupChecks.push(Promise.resolve({ exists: false })); }
+
+  // ERR8:PE — Enrollment + class
+  var enrollmentVal = (document.getElementById('enrollment').value || '').trim();
+  if (!isReval && enrollmentVal) {
+    dupChecks.push(gasGet({ action: 'checkDuplicate', value: enrollmentVal + '||' + classNameLower, field: 'enrollment_class' }));
+  } else { dupChecks.push(Promise.resolve({ exists: false })); }
+
+  Promise.all(dupChecks)
+    .then(function(results) {
+      if (results[0] && results[0].exists) {
+        btn.disabled = false; btn.textContent = btnText;
+        document.getElementById('rollNo').classList.add('error-input');
+        showAlert('error', ERR_ROLL);
+        document.getElementById('rollNo').focus(); return;
+      }
+      if (results[1] && results[1].exists) {
+        btn.disabled = false; btn.textContent = btnText;
+        document.getElementById('utrNo').classList.add('error-input');
+        showAlert('error', ERR_UTR);
+        document.getElementById('utrNo').focus(); return;
+      }
+      if (results[2] && results[2].exists) {
+        btn.disabled = false; btn.textContent = btnText;
+        document.getElementById('transId').classList.add('error-input');
+        showAlert('error', ERR_TRANS);
+        document.getElementById('transId').focus(); return;
+      }
+      if (results[3] && results[3].exists) {
+        btn.disabled = false; btn.textContent = btnText;
+        showAlert('error', ERR_DUP + ' [ERR4:CA]'); return;
+      }
+      if (results[4] && results[4].exists) {
+        btn.disabled = false; btn.textContent = btnText;
+        showAlert('error', ERR_DUP + ' [ERR5:IA]'); return;
+      }
+      if (results[5] && results[5].exists) {
+        btn.disabled = false; btn.textContent = btnText;
+        showAlert('error', ERR_DUP + ' [ERR7:IACAL6]'); return;
+      }
+      if (results[6] && results[6].exists) {
+        btn.disabled = false; btn.textContent = btnText;
+        showAlert('error', ERR_DUP + ' [ERR8:PE]'); return;
+      }
+
+      btn.textContent = '⏳ Passport Upload…';
+
+      new Promise(function(resolve, reject) {
+        var r = new FileReader();
+        r.onload = function(e) {
+          var base64        = e.target.result.split(',')[1];
+          var formattedName = buildPassportFileName(passportFileObj.name);
+          gasPost({
+            action: 'uploadPhoto',
+            base64Data: base64,
+            mimeType:   passportFileObj.type,
+            fileName:   formattedName,
+            folder:     passportFolderLink || 'PassportPhotos'
+          }).then(function(res) {
+            if (res.success) { fd.passportPhotoUrl = res.url; resolve(); }
+            else reject(new Error(res.message || 'Passport upload failed'));
+          }).catch(reject);
+        };
+        r.onerror = function() { reject(new Error('File read error')); };
+        r.readAsDataURL(passportFileObj);
+      })
+      .then(function() {
+        btn.textContent = '⏳ Submitting…';
+        return gasPost({ action: 'submitForm', fd: fd });
+      })
+      .then(function(res) {
+        btn.disabled = false; btn.textContent = btnText;
+        if (res.success) showSuccessScreen(res, fd);
+        else showAlert('error', res.message || 'Submission failed. Try again.');
+      })
+      .catch(function(err) {
+        btn.disabled = false; btn.textContent = btnText;
+        showAlert('error', 'Error: ' + (err.message || err));
+      });
+    })
+    .catch(function(err) {
+      btn.disabled = false; btn.textContent = btnText;
+      showAlert('error', 'Network error, try again: ' + (err.message || err));
+    });
+  }); // end showModal
+}
+
+// ══ SUCCESS ═══════════════════════════════════════════════════
+function showSuccessScreen(res, fd) {
+  document.getElementById('mainForm').classList.add('hidden');
+  document.getElementById('successScreen').classList.remove('hidden');
+
+  var lbh = document.getElementById('leftBoxHeading');
+  if (lbh) lbh.textContent = RECEIPT_BOX_LEFT;
+  var rbh = document.getElementById('rightBoxHeading');
+  if (rbh) rbh.textContent = RECEIPT_BOX_RIGHT;
+
+  var headEl = document.getElementById('successHeadingTitle');
+  if (headEl) headEl.textContent = landingHeading;
+
+  var n1 = document.getElementById('note1PendingText');
+  if (n1) n1.textContent = NOTE1_PENDING;
+  var n2 = document.getElementById('note2SuccessText');
+  if (n2) n2.textContent = NOTE2_SUCCESS;
+
+  var finalRoll = fd.formType === 'reval'
+    ? 'R' + fd.rollNo.replace(/'/, '') : fd.rollNo.replace(/'/, '');
+  var currTime = new Date().toLocaleString('en-IN', { timeZone:'Asia/Kolkata', dateStyle:'medium', timeStyle:'short' });
+
+  // Left box — submission details
+  var det = document.getElementById('successDetails');
+  if (det) det.innerHTML =
+    (res.serialNo ? sRow('Serial No', res.serialNo) : '') +
+    sRow('Form Type',        fd.formType === 'reval' ? '🔄 Revaluation' : '📝 Exam Form') +
+    sRow('Examination',      fd.formType === 'reval' ? 'RVL_' + fd.examName : fd.examName) +
+    sRow('Roll No',          finalRoll) +
+    sRow('Student',          fd.name) +
+    sRow('Subjects',         fd.formType === 'reval' ? fd.theory + ' paper(s)' : 'TH ' + fd.theory + ' / PR ' + fd.practical) +
+    sRow('UTR Last 6',       fd.utrNo.replace(/^'/,'')) +
+    sRow('Trans ID Last 6',  fd.transId.replace(/^'/,'')) +
+    sRow('Fee Paid',         '₹ ' + fd.feePaid) +
+    sRow('Submitted',        currTime);
+
+  // Right box — declaration 3-column format
+  var declEl = document.getElementById('declarationReceipt');
+  if (declEl) {
+    var declFields = [
+      ['Name',          '1',  fd.name || '—'],
+      ['DOB',           '2',  fd.dob  || '—'],
+      ['Email',         '3',  fd.email || '—'],
+      ['Aadhaar',       '4',  fd.aadhaar || '—'],
+      ['Mobile',        '5',  fd.mobile || '—'],
+      ['Address',       '6',  fd.address || '—'],
+      ['Caste',         '7',  fd.caste || '—'],
+      ['PIN Code',      '8',  (fd.pincode || '').replace(/^'/,'') || '—'],
+      ['Enrollment No', '9',  fd.enrollment || '—'],
+      ['ABC/APAAR ID',  '10', fd.abcId || '—'],
+      ['UTR Last 6*',   '11', fd.utrNo.replace(/^'/,'') || '—'],
+      ['Serial No',     '12', res.serialNo || '—']
+    ];
+    declEl.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:11px;">' +
+      declFields.map(function(f) {
+        return '<tr>' +
+          '<td style="text-align:right;font-weight:700;color:#1a3460;padding:2px 4px 2px 0;white-space:nowrap;width:38%;">' + f[0] + '</td>' +
+          '<td style="text-align:center;color:#64748b;font-weight:600;padding:2px 4px;white-space:nowrap;width:16%;">-: ' + f[1] + ' :-</td>' +
+          '<td style="text-align:left;color:#1e293b;padding:2px 0 2px 4px;word-break:break-all;width:46%;">' + f[2] + '</td>' +
+          '</tr>';
+      }).join('') +
+      '</table>';
+  }
+
+  cacheClear(DRAFT_KEY);
+  window.scrollTo({ top:0, behavior:'smooth' });
+}
+
+function sRow(k, v) {
+  return '<div style="display:flex;justify-content:space-between;align-items:baseline;padding:2.5px 0;font-size:11px;gap:4px;">' +
+    '<span style="color:#64748b;font-weight:600;flex-shrink:0;white-space:nowrap;">' + k + '</span>' +
+    '<span style="font-weight:700;color:#0d1f3c;text-align:right;word-break:break-all;">' + v + '</span>' +
+    '</div>';
+}
+
+function dRow(k, v) {
+  return '<div class="detail-row"><span class="detail-key">' + k + '</span><span class="detail-val">' + v + '</span></div>';
+}
+
+// ── Save Receipt as HD Image ───────────────────────────────────
+function saveReceiptImage() {
+  var saveBtn  = document.getElementById('saveReceiptBtn');
+  var statusEl = document.getElementById('saveStatus');
+  if (saveBtn)  { saveBtn.disabled = true; saveBtn.textContent = '⏳ Preparing…'; }
+  if (statusEl)   statusEl.textContent = 'Receipt taiyaar ho rahi hai…';
+
+  function doCapture() {
+    var el = document.getElementById('receiptArea');
+    var A4W       = 794;
+    var A4H       = 1123;
+    var marginL   = 144;
+    var marginR   = 48;
+    var marginTop = 240;
+    var marginBot = 72;
+    var contentW  = A4W - marginL - marginR;
+
+    html2canvas(el, {
+      scale: 2,
+      useCORS: true,
+      allowTaint: true,
+      backgroundColor: '#ffffff',
+      width: contentW,
+      windowWidth: contentW,
+      scrollX: 0,
+      scrollY: -window.scrollY,
+      onclone: function(clonedDoc) {
+        var wms = clonedDoc.querySelectorAll('.receipt-watermark');
+        wms.forEach(function(wm) {
+          wm.style.backgroundImage = 'radial-gradient(circle, rgba(13,31,60,0.18) 1px, transparent 1px)';
+          wm.style.backgroundSize  = '10px 10px';
+          wm.style.position        = 'absolute';
+          wm.style.inset           = '0';
+          wm.style.display         = 'block';
+        });
+      }
+    }).then(function(canvas) {
+      var scale   = 2;
+      var finalW  = A4W * scale;
+      var finalH  = Math.max(A4H * scale, canvas.height + (marginTop + marginBot) * scale);
+
+      var finalCanvas    = document.createElement('canvas');
+      finalCanvas.width  = finalW;
+      finalCanvas.height = finalH;
+      var ctx = finalCanvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, finalW, finalH);
+      ctx.drawImage(canvas, marginL * scale, marginTop * scale);
+
+      var link   = document.createElement('a');
+      var rollEl = document.getElementById('rollNo');
+      var roll   = rollEl ? rollEl.value.replace(/^'/, '') : '';
+      link.download = 'ExamForm_' + (roll || 'Receipt') + '_' + Date.now() + '.png';
+      link.href = finalCanvas.toDataURL('image/png');
+      link.click();
+      if (saveBtn)  { saveBtn.disabled = false; saveBtn.textContent = '💾 Save Receipt'; }
+      if (statusEl)   statusEl.textContent = '✅ Receipt saved!';
+    }).catch(function(err) {
+      if (saveBtn)  { saveBtn.disabled = false; saveBtn.textContent = '💾 Save Receipt'; }
+      if (statusEl)   statusEl.textContent = '⚠ Could not save: ' + err.message;
+    });
+  }
+
+  if (typeof html2canvas !== 'undefined') {
+    doCapture();
+  } else {
+    var s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+    s.onload  = doCapture;
+    s.onerror = function() {
+      if (saveBtn)  { saveBtn.disabled = false; saveBtn.textContent = '💾 Save Receipt'; }
+      if (statusEl)   statusEl.textContent = '⚠ Library load nahi hui, internet check karein.';
+    };
+    document.head.appendChild(s);
+  }
+}
+
+// ── QR Share ──────────────────────────────────────────────────
+function shareQR() {
+  var qrImgEl = document.getElementById('qrImg');
+  if (!qrImgEl || !qrImgEl.src) return;
+
+  if (navigator.share) {
+    var src = qrImgEl.src;
+    var isBase64 = src.startsWith('data:');
+
+    function doShare(blob) {
+      var file = new File([blob], 'PaymentQR.png', { type: 'image/png' });
+      navigator.share({ title: FORM_HEADING, files: [file] })
+        .catch(function() {
+          navigator.share({ title: FORM_HEADING + ' — Payment QR' }).catch(function(){});
+        });
+    }
+
+    if (isBase64) {
+      var arr  = src.split(',');
+      var mime = arr[0].match(/:(.*?);/)[1];
+      var bstr = atob(arr[1]);
+      var n    = bstr.length;
+      var u8   = new Uint8Array(n);
+      while (n--) u8[n] = bstr.charCodeAt(n);
+      doShare(new Blob([u8], { type: mime }));
+    } else {
+      fetch(src).then(function(r) { return r.blob(); }).then(doShare).catch(function(){});
+    }
+  }
+}
+
+// ══ RESET / DRAFT ═════════════════════════════════════════════
+function resetForm(fullReset) {
+  if (fullReset === undefined) fullReset = true;
+  document.getElementById('successScreen').classList.add('hidden');
+  document.getElementById('mainForm').classList.remove('hidden');
+  document.querySelectorAll('#mainForm input:not([type=file]):not([type=hidden]), #mainForm select, #mainForm textarea')
+    .forEach(function(el) { el.value = ''; el.classList.remove('error-input'); });
+
+  // ══ ACTION 1: Preserve landing login state — do NOT reset ════
+  if (landingUserEmail) {
+    googleUserEmail  = landingUserEmail;
+    isGoogleVerified = true;
+    var authStatusEl2 = document.getElementById('googleAuthStatus');
+    if (authStatusEl2) {
+      authStatusEl2.innerHTML = '<span style="color:var(--success);font-weight:bold;">🔒 Logged in via Gmail: ' + landingUserEmail + '</span>';
+    }
+  }
+
+  var fd = document.getElementById('feeDate');
+  if (fd) fd.valueAsDate = new Date();
+  removePhoto();
+  resetCounters(); clearAllDup(); hideAlert();
+  if (fullReset && classesLoaded) buildDropdown();
+  cacheClear(DRAFT_KEY);
+}
+
+// ── Draft save/load ────────────────────────────────────────────
+function saveDraft() {
+  var draft = {};
+  document.querySelectorAll('#mainForm input, #mainForm select, #mainForm textarea').forEach(function(el) {
+    if (el.id && el.type !== 'file' && el.type !== 'hidden') draft[el.id] = el.value;
+  });
+  draft.formType = formType; draft.thCount = thCount; draft.prCount = prCount;
+  cacheSet(DRAFT_KEY, draft, true);
+}
+
+function applyDraft() {
+  var draft = cacheGet(DRAFT_KEY, CACHE_MS);
+  if (!draft) return;
+  if (!draft.formType || draft.formType !== formType) return;
+  document.querySelectorAll('#mainForm input, #mainForm select, #mainForm textarea').forEach(function(el) {
+    if (el.id && draft[el.id] !== undefined && el.type !== 'file' && el.type !== 'hidden') {
+        el.value = draft[el.id];
+    }
+  });
+  if (draft.examName) {
+    onClassChange();
+    if (draft.thCount > 0) { var dt = draft.thCount - thCount; if (dt > 0) changeCount('th', dt); }
+    if (draft.prCount > 0) { var dp = draft.prCount - prCount; if (dp > 0) changeCount('pr', dp); }
+  }
+}
+
+// ══ PAGE START ════════════════════════════════════════════════
+window.addEventListener('DOMContentLoaded', function() {
+  document.getElementById('landingHeading').textContent = FORM_HEADING;
+
+  var vb = document.getElementById('versionBadge');
+  if (vb) vb.textContent = PROJECT_VERSION;
+
+  var samb = document.getElementById('submitAlertMsgBox');
+  if (samb) samb.textContent = SUBMIT_ALERT_MSG;
+
+  var lf = document.getElementById('landingFooter');
+  if (lf) lf.textContent = '⚡ Crafted by @$)-(●|<  $)-(@₹/^\\@';
+
+  // ── Restore previous session if still within 2 hours ─────────
+  try {
+    var savedSession = localStorage.getItem(LOGIN_SESSION_KEY);
+    if (savedSession) {
+      var sess = JSON.parse(savedSession);
+      var elapsed  = Date.now() - (sess.loginTime || 0);
+      var remaining = LOGIN_SESSION_TTL - elapsed;
+      if (remaining > 0 && sess.email) {
+        // Session still valid — restore login state silently
+        googleUserEmail   = sess.email;
+        isGoogleVerified  = sess.verified || true;
+        landingUserEmail  = sess.email;
+        isLandingVerified = true;
+        applyLoginUI(sess.email, remaining);
+        startSessionCheck(sess.loginTime);
+      } else {
+        // Session expired — clean up
+        localStorage.removeItem(LOGIN_SESSION_KEY);
+      }
+    }
+  } catch(e) {}
+
+  gasGet({ action: 'getClasses' })
+    .then(function(data) {
+      if (!data || data.error) return;
+
+      cacheSet(CLASS_KEY, data, true);
+
+      if (data.noticeHtml) {
+        cacheSet(NOTICE_KEY, data.noticeHtml, false);
+      }
+
+      if (data.formStatus === 'Form Closed') {
+        document.getElementById('landingScreen').classList.add('hidden');
+        document.getElementById('formClosedScreen').classList.remove('hidden');
+        return;
+      }
+      classes = data.classes || []; sessions = data.sessions || []; sections = data.sections || [];
+      if (data.heading) { landingHeading = data.heading; document.getElementById('landingHeading').textContent = data.heading; }
+      if (data.passportFolderLink) passportFolderLink = data.passportFolderLink;
+      if (data.qrCodeLink)         qrCodeLink         = data.qrCodeLink;
+      if (data.noticeHtml)         noticeHtml         = data.noticeHtml;
+      classesLoaded = true;
+    })
+    .catch(function() {});
+});
+
+function bindFormatters() {
+  ['abcId','aadhaar'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (!el || el._fmtBound) return;
+    el._fmtBound = true;
+    el.addEventListener('input', function() {
+      var v = this.value.replace(/\\D/g, '');
+      var f = v.match(/.{1,4}/g);
+      this.value = f ? f.join('-') : '';
+    });
+  });
+}
+
+// ── Google Sign-In Callback and JWT Decode ─────────────────────
+function decodeJwtResponse(token) {
+  var base64Url = token.split('.')[1];
+  var base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+  var jsonPayload = decodeURIComponent(window.atob(base64).split('').map(function(c) {
+    return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+  }).join(''));
+  return JSON.parse(jsonPayload);
+}
+
+// ══ SESSION HELPERS ══════════════════════════════════════════
+
+// Apply verified-login UI to landing screen
+function applyLoginUI(email, remaining) {
+  var landingBtn = document.getElementById('landingGoogleBtn');
+  if (landingBtn) landingBtn.style.display = 'none';
+
+  var landingPrompt = document.getElementById('landingLoginPrompt');
+  if (landingPrompt) landingPrompt.textContent = '✅ Gmail Login Successful!';
+
+  var tagEl = document.getElementById('landingEmailTag');
+  if (tagEl) {
+    tagEl.classList.remove('hidden');
+    var tagText = document.getElementById('landingEmailText');
+    if (tagText) {
+      tagText.textContent = email;
+    }
+  }
+
+  // Show Switch Account button
+  var switchBtn = document.getElementById('switchAccountBtn');
+  if (switchBtn) switchBtn.classList.remove('hidden');
+
+  ['examChoiceCard','revalChoiceCard'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.classList.remove('locked');
+  });
+
+  var qEl = document.getElementById('landingQuestion');
+  if (qEl) qEl.textContent = 'अब कौन सा Form भरना चाहते हैं? 👇';
+}
+
+// Expire session — lock everything, show login button again
+function expireSession() {
+  isLandingVerified = false;
+  isGoogleVerified  = false;
+  landingUserEmail  = '';
+  googleUserEmail   = '';
+  if (sessionCheckInterval) { clearInterval(sessionCheckInterval); sessionCheckInterval = null; }
+
+  try { localStorage.removeItem(LOGIN_SESSION_KEY); } catch(e) {}
+
+  // Go back to landing if inside a form
+  var formScreen = document.getElementById('formScreen');
+  if (formScreen && !formScreen.classList.contains('hidden')) {
+    document.getElementById('formScreen').classList.add('hidden');
+    document.getElementById('landingScreen').classList.remove('hidden');
+    document.getElementById('successScreen').classList.add('hidden');
+    document.getElementById('mainForm').classList.remove('hidden');
+    resetForm(false);
+  }
+
+  // Reset landing UI to pre-login state
+  var landingBtn = document.getElementById('landingGoogleBtn');
+  if (landingBtn) landingBtn.style.display = '';
+
+  var landingPrompt = document.getElementById('landingLoginPrompt');
+  if (landingPrompt) {
+    landingPrompt.innerHTML = '⏰ Session Expired (2 hrs)<br><span style="color:#ef4444;font-size:11px;font-weight:600;">Please sign in again to continue.</span>';
+  }
+
+  var tagEl = document.getElementById('landingEmailTag');
+  if (tagEl) tagEl.classList.add('hidden');
+
+  // Hide Switch Account button
+  var switchBtn = document.getElementById('switchAccountBtn');
+  if (switchBtn) switchBtn.classList.add('hidden');
+
+  ['examChoiceCard','revalChoiceCard'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.classList.add('locked');
+  });
+
+  var qEl = document.getElementById('landingQuestion');
+  if (qEl) qEl.textContent = 'Gmail Login karo — Form Access karein';
+}
+
+// Logout — student galti se wrong Gmail login kar le toh switch kar sake
+function logoutSession() {
+  isLandingVerified = false;
+  isGoogleVerified  = false;
+  landingUserEmail  = '';
+  googleUserEmail   = '';
+  if (sessionCheckInterval) { clearInterval(sessionCheckInterval); sessionCheckInterval = null; }
+
+  try { localStorage.removeItem(LOGIN_SESSION_KEY); } catch(e) {}
+
+  // Agar form ke andar hai toh landing pe wapas
+  var formScreen = document.getElementById('formScreen');
+  if (formScreen && !formScreen.classList.contains('hidden')) {
+    formScreen.classList.add('hidden');
+    document.getElementById('landingScreen').classList.remove('hidden');
+    document.getElementById('successScreen').classList.add('hidden');
+    document.getElementById('mainForm').classList.remove('hidden');
+    resetForm(false);
+  }
+
+  // Landing UI reset — Google Sign-In button wapas dikhao
+  var landingBtn = document.getElementById('landingGoogleBtn');
+  if (landingBtn) landingBtn.style.display = '';
+
+  var landingPrompt = document.getElementById('landingLoginPrompt');
+  if (landingPrompt) {
+    landingPrompt.innerHTML = '📧 Gmail se Login karo<br><span style="color:#64748b;font-size:11px;font-weight:500;">Dono forms automatically activate ho jayenge</span>';
+  }
+
+  var tagEl = document.getElementById('landingEmailTag');
+  if (tagEl) tagEl.classList.add('hidden');
+
+  var switchBtn = document.getElementById('switchAccountBtn');
+  if (switchBtn) switchBtn.classList.add('hidden');
+
+  ['examChoiceCard','revalChoiceCard'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.classList.add('locked');
+  });
+
+  var qEl = document.getElementById('landingQuestion');
+  if (qEl) qEl.textContent = 'Gmail Login karo — Form Access karein';
+}
+
+// Start periodic session check — runs every 60 seconds
+function startSessionCheck(loginTime) {
+  if (sessionCheckInterval) clearInterval(sessionCheckInterval);
+  sessionCheckInterval = setInterval(function() {
+    var elapsed = Date.now() - loginTime;
+    if (elapsed >= LOGIN_SESSION_TTL) {
+      expireSession();
+      return;
+    }
+    // Session still valid — no visible countdown shown
+  }, 60000); // every 60 seconds
+}
+
+// ══ ACTION 1: Updated handleCredentialResponse ════════════════
+function handleCredentialResponse(response) {
+  try {
+    var responsePayload = decodeJwtResponse(response.credential);
+    if (responsePayload && responsePayload.email) {
+      googleUserEmail   = responsePayload.email;
+      isGoogleVerified  = responsePayload.email_verified;
+      landingUserEmail  = responsePayload.email;
+      isLandingVerified = true;
+
+      // ── Save session to localStorage with timestamp ───────────
+      var loginTime = Date.now();
+      try {
+        localStorage.setItem(LOGIN_SESSION_KEY, JSON.stringify({
+          email:     responsePayload.email,
+          verified:  responsePayload.email_verified,
+          loginTime: loginTime
+        }));
+      } catch(e) {}
+
+      // ── Update landing UI ─────────────────────────────────────
+      applyLoginUI(responsePayload.email, LOGIN_SESSION_TTL);
+
+      // ── Start 2-hour session countdown ───────────────────────
+      startSessionCheck(loginTime);
+
+    } else {
+      var alertBox = document.getElementById('alertBox');
+      if (alertBox && !document.getElementById('formScreen').classList.contains('hidden')) {
+        showAlert('error', 'Google Sign-In failed to return email.');
+      }
+    }
+  } catch(e) {
+    var alertBox2 = document.getElementById('alertBox');
+    if (alertBox2 && !document.getElementById('formScreen').classList.contains('hidden')) {
+      showAlert('error', 'Google Sign-In error: ' + e.message);
+    }
+  }
+}
+</script>
+</body>
+</html>
+`;
+
+export default {
+  async fetch(request) {
+    return new Response(HTML, {
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-cache',
+      },
+    });
+  },
+};
